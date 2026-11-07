@@ -17,6 +17,8 @@
 #include "ozz/animation/runtime/local_to_model_job.h"
 #include "ozz/animation/runtime/sampling_job.h"
 #include "ozz/animation/runtime/skeleton.h"
+#include "ozz/base/io/archive.h"
+#include "ozz/base/io/stream.h"
 #include "ozz/base/maths/box.h"
 #include "ozz/base/maths/soa_transform.h"
 #include "ozz/options/options.h"
@@ -32,14 +34,41 @@ namespace {
 constexpr const char* kSkeletonName = "skeleton.ozz";
 constexpr const char* kMeshName = "mesh.ozz";
 
+struct Clip {
+  fs::path path;
+  std::string name;  // File name without extension.
+  float duration;
+};
+
 struct Folder {
   std::string name;
   std::vector<Folder> folders;
-  std::vector<fs::path> clips;
+  std::vector<Clip> clips;
+  int num_clips = 0;  // Including sub-folders.
 };
 
-// Recursively collects .ozz clips, skipping skeletons, hidden entries and
-// folders without clips.
+// Reads an animation archive header up to its duration, without loading the
+// keyframes. Returns false if the file isn't an ozz animation.
+bool ReadClipDuration(const fs::path& _path, float* _duration) {
+  ozz::io::File file(_path.string().c_str(), "rb");
+  if (!file.opened()) {
+    return false;
+  }
+  ozz::io::IArchive archive(&file);
+  if (!archive.TestTag<ozz::animation::Animation>()) {
+    return false;
+  }
+  // Layout: tag, version, then duration first (see Animation::Load).
+  file.Seek(ozz::io::internal::Tag<const ozz::animation::Animation>::kTagLength,
+            ozz::io::Stream::kCurrent);
+  uint32_t version = 0;
+  archive >> version;
+  archive >> *_duration;
+  return version == ozz::io::internal::Version<const ozz::animation::Animation>::kValue;
+}
+
+// Recursively collects animation clips, skipping other archives (skeletons,
+// meshes), hidden entries and folders without clips.
 bool ScanFolder(const fs::path& _path, Folder* _folder) {
   _folder->name = _path.filename().string();
   std::error_code ec;
@@ -53,14 +82,23 @@ bool ScanFolder(const fs::path& _path, Folder* _folder) {
       if (ScanFolder(entry.path(), &child)) {
         _folder->folders.push_back(std::move(child));
       }
-    } else if (entry.path().extension() == ".ozz" && name != kSkeletonName) {
-      _folder->clips.push_back(entry.path());
+    } else if (entry.path().extension() == ".ozz") {
+      float duration;
+      if (ReadClipDuration(entry.path(), &duration)) {
+        _folder->clips.push_back(
+            {entry.path(), entry.path().stem().string(), duration});
+      }
     }
   }
   std::sort(_folder->folders.begin(), _folder->folders.end(),
             [](const Folder& _a, const Folder& _b) { return _a.name < _b.name; });
-  std::sort(_folder->clips.begin(), _folder->clips.end());
-  return !_folder->folders.empty() || !_folder->clips.empty();
+  std::sort(_folder->clips.begin(), _folder->clips.end(),
+            [](const Clip& _a, const Clip& _b) { return _a.name < _b.name; });
+  _folder->num_clips = static_cast<int>(_folder->clips.size());
+  for (const Folder& folder : _folder->folders) {
+    _folder->num_clips += folder.num_clips;
+  }
+  return _folder->num_clips > 0;
 }
 
 // A character is a folder holding both a skeleton and a skinned mesh.
@@ -217,9 +255,18 @@ class PreviewApplication : public ozz::sample::Application {
     }
     ImGui::Separator();
 
-    ImGui::BeginChild("tree");
-    DrawFolder(root_, root_path_, true);
-    ImGui::EndChild();
+    const ImGuiTableFlags table_flags =
+        ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg |
+        ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable;
+    if (ImGui::BeginTable("clips", 2, table_flags)) {
+      ImGui::TableSetupScrollFreeze(0, 1);
+      ImGui::TableSetupColumn("Clip", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableSetupColumn("Duration", ImGuiTableColumnFlags_WidthFixed,
+                              ImGui::CalcTextSize("Duration").x);
+      ImGui::TableHeadersRow();
+      DrawFolder(root_, root_path_, true);
+      ImGui::EndTable();
+    }
 
     ImGui::End();
     return true;
@@ -289,7 +336,7 @@ class PreviewApplication : public ozz::sample::Application {
 
   bool HasMatch(const Folder& _folder) const {
     for (const auto& clip : _folder.clips) {
-      if (filter_.PassFilter(clip.stem().string().c_str())) {
+      if (filter_.PassFilter(clip.name.c_str())) {
         return true;
       }
     }
@@ -310,10 +357,15 @@ class PreviewApplication : public ozz::sample::Application {
       ImGui::SetNextItemOpen(true);
     }
     const ImGuiTreeNodeFlags folder_flags =
-        ImGuiTreeNodeFlags_SpanAvailWidth |
+        ImGuiTreeNodeFlags_SpanAllColumns |
         (_is_root ? ImGuiTreeNodeFlags_DefaultOpen : 0);
-    if (!ImGui::TreeNodeEx(_path.string().c_str(), folder_flags, "%s",
-                           _folder.name.c_str())) {
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    const bool open = ImGui::TreeNodeEx(_path.string().c_str(), folder_flags,
+                                        "%s", _folder.name.c_str());
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("%d", _folder.num_clips);
+    if (!open) {
       return;
     }
     for (const auto& folder : _folder.folders) {
@@ -323,7 +375,7 @@ class PreviewApplication : public ozz::sample::Application {
     // Clips, clipped to the visible range as folders can hold thousands.
     visible_.clear();
     for (const auto& clip : _folder.clips) {
-      if (!filtering || filter_.PassFilter(clip.stem().string().c_str())) {
+      if (!filtering || filter_.PassFilter(clip.name.c_str())) {
         visible_.push_back(&clip);
       }
     }
@@ -331,17 +383,21 @@ class PreviewApplication : public ozz::sample::Application {
     clipper.Begin(static_cast<int>(visible_.size()));
     while (clipper.Step()) {
       for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
-        const fs::path& clip = *visible_[i];
-        const bool selected = clip == selected_;
+        const Clip& clip = *visible_[i];
+        const bool selected = clip.path == selected_;
         ImGuiTreeNodeFlags flags =
             ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen |
-            ImGuiTreeNodeFlags_SpanAvailWidth |
+            ImGuiTreeNodeFlags_SpanAllColumns |
             (selected ? ImGuiTreeNodeFlags_Selected : 0);
-        ImGui::TreeNodeEx(clip.string().c_str(), flags, "%s",
-                          clip.stem().string().c_str());
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TreeNodeEx(clip.path.string().c_str(), flags, "%s",
+                          clip.name.c_str());
         if (ImGui::IsItemClicked() && !selected) {
-          Load(clip);
+          Load(clip.path);
         }
+        ImGui::TableNextColumn();
+        ImGui::Text("%.1fs", clip.duration);
       }
     }
     ImGui::TreePop();
@@ -429,7 +485,7 @@ class PreviewApplication : public ozz::sample::Application {
   fs::path root_path_;
   Folder root_;
   ImGuiTextFilter filter_;
-  std::vector<const fs::path*> visible_;
+  std::vector<const Clip*> visible_;
   fs::path selected_;
   std::string status_;
 
