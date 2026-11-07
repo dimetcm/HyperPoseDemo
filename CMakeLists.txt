@@ -34,13 +34,22 @@ endif()
 
 add_subdirectory(external/ozz_framework)
 
+# Code shared by the apps: animation helpers and retargeting.
+add_library(hyperpose_common STATIC
+  src/common/anim_utils.h
+  src/common/anim_utils.cpp
+  src/common/retarget.h
+  src/common/retarget.cpp)
+target_include_directories(hyperpose_common PUBLIC src)
+target_link_libraries(hyperpose_common PUBLIC sample_framework)
+
 add_executable(HyperPoseDemo src/main.cpp)
-target_link_libraries(HyperPoseDemo PRIVATE sample_framework)
+target_link_libraries(HyperPoseDemo PRIVATE hyperpose_common)
 set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT HyperPoseDemo)
 
 # Animation browser/preview.
-add_executable(AnimPreview src/preview.cpp src/retarget.h src/retarget.cpp)
-target_link_libraries(AnimPreview PRIVATE sample_framework)
+add_executable(AnimPreview src/preview.cpp)
+target_link_libraries(AnimPreview PRIVATE hyperpose_common)
 target_compile_definitions(AnimPreview PRIVATE HYPERPOSE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/Assets")
 
 # Asset pipeline: rescales/builds raw archives from fbx2ozz (see Tools/convert_fbx.py).

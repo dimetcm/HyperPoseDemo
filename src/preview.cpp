@@ -8,21 +8,19 @@
 
 #include <imgui.h>
 
+#include "common/anim_utils.h"
+#include "common/retarget.h"
 #include "framework/application.h"
 #include "framework/imgui.h"
 #include "framework/mesh.h"
 #include "framework/renderer.h"
 #include "framework/utils.h"
 #include "ozz/animation/runtime/animation.h"
-#include "ozz/animation/runtime/local_to_model_job.h"
 #include "ozz/animation/runtime/sampling_job.h"
 #include "ozz/animation/runtime/skeleton.h"
-#include "ozz/base/io/archive.h"
-#include "ozz/base/io/stream.h"
 #include "ozz/base/maths/box.h"
 #include "ozz/base/maths/soa_transform.h"
 #include "ozz/options/options.h"
-#include "retarget.h"
 
 namespace fs = std::filesystem;
 
@@ -47,26 +45,6 @@ struct Folder {
   int num_clips = 0;  // Including sub-folders.
 };
 
-// Reads an animation archive header up to its duration, without loading the
-// keyframes. Returns false if the file isn't an ozz animation.
-bool ReadClipDuration(const fs::path& _path, float* _duration) {
-  ozz::io::File file(_path.string().c_str(), "rb");
-  if (!file.opened()) {
-    return false;
-  }
-  ozz::io::IArchive archive(&file);
-  if (!archive.TestTag<ozz::animation::Animation>()) {
-    return false;
-  }
-  // Layout: tag, version, then duration first (see Animation::Load).
-  file.Seek(ozz::io::internal::Tag<const ozz::animation::Animation>::kTagLength,
-            ozz::io::Stream::kCurrent);
-  uint32_t version = 0;
-  archive >> version;
-  archive >> *_duration;
-  return version == ozz::io::internal::Version<const ozz::animation::Animation>::kValue;
-}
-
 // Recursively collects animation clips, skipping other archives (skeletons,
 // meshes), hidden entries and folders without clips.
 bool ScanFolder(const fs::path& _path, Folder* _folder) {
@@ -84,7 +62,7 @@ bool ScanFolder(const fs::path& _path, Folder* _folder) {
       }
     } else if (entry.path().extension() == ".ozz") {
       float duration;
-      if (ReadClipDuration(entry.path(), &duration)) {
+      if (hyperpose::ReadClipDuration(entry.path().string().c_str(), &duration)) {
         _folder->clips.push_back(
             {entry.path(), entry.path().stem().string(), duration});
       }
@@ -142,21 +120,9 @@ class PreviewApplication : public ozz::sample::Application {
       return true;
     }
     controller_.Update(animation_, _dt);
-
-    ozz::animation::SamplingJob sampling_job;
-    sampling_job.animation = &animation_;
-    sampling_job.context = &context_;
-    sampling_job.ratio = controller_.time_ratio();
-    sampling_job.output = make_span(locals_);
-    if (!sampling_job.Run()) {
-      return false;
-    }
-
-    ozz::animation::LocalToModelJob ltm_job;
-    ltm_job.skeleton = &skeleton_;
-    ltm_job.input = make_span(locals_);
-    ltm_job.output = make_span(models_);
-    if (!ltm_job.Run()) {
+    if (!hyperpose::SamplePose(animation_, skeleton_, controller_.time_ratio(),
+                               &context_, make_span(locals_),
+                               make_span(models_))) {
       return false;
     }
 
@@ -176,10 +142,8 @@ class PreviewApplication : public ozz::sample::Application {
     if (show_character) {
       const auto& models = CharacterModels();
       for (const ozz::sample::Mesh& mesh : meshes_) {
-        for (size_t i = 0; i < mesh.joint_remaps.size(); ++i) {
-          skinning_matrices_[i] =
-              models[mesh.joint_remaps[i]] * mesh.inverse_bind_poses[i];
-        }
+        hyperpose::ComputeSkinningMatrices(mesh, make_span(models),
+                                           make_span(skinning_matrices_));
         success &= _renderer->DrawSkinnedMesh(
             mesh, make_span(skinning_matrices_), transform);
       }

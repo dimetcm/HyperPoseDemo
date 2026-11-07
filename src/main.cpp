@@ -2,6 +2,7 @@
 // Loads --skeleton/--animation (.ozz archives) when given, otherwise plays a
 // built-in 3-joint arm swing.
 
+#include "common/anim_utils.h"
 #include "framework/application.h"
 #include "framework/imgui.h"
 #include "framework/renderer.h"
@@ -11,7 +12,6 @@
 #include "ozz/animation/offline/raw_skeleton.h"
 #include "ozz/animation/offline/skeleton_builder.h"
 #include "ozz/animation/runtime/animation.h"
-#include "ozz/animation/runtime/local_to_model_job.h"
 #include "ozz/animation/runtime/sampling_job.h"
 #include "ozz/animation/runtime/skeleton.h"
 #include "ozz/base/maths/box.h"
@@ -81,21 +81,9 @@ class DemoApplication : public ozz::sample::Application {
 
   bool OnUpdate(float _dt, float) override {
     controller_.Update(animation_, _dt);
-
-    ozz::animation::SamplingJob sampling_job;
-    sampling_job.animation = &animation_;
-    sampling_job.context = &context_;
-    sampling_job.ratio = controller_.time_ratio();
-    sampling_job.output = make_span(locals_);
-    if (!sampling_job.Run()) {
-      return false;
-    }
-
-    ozz::animation::LocalToModelJob ltm_job;
-    ltm_job.skeleton = &skeleton_;
-    ltm_job.input = make_span(locals_);
-    ltm_job.output = make_span(models_);
-    return ltm_job.Run();
+    return hyperpose::SamplePose(animation_, skeleton_, controller_.time_ratio(),
+                                 &context_, make_span(locals_),
+                                 make_span(models_));
   }
 
   bool OnDisplay(ozz::sample::Renderer* _renderer) override {
