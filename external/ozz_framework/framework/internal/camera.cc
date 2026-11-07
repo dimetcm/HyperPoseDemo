@@ -130,6 +130,11 @@ void Camera::Update(GLFWwindow* _window, const math::Float4x4& _transform,
   }
 }
 
+void Camera::Zoom(float _wheel_steps) {
+  // Each step moves 15% closer or further, so zoom feels the same at any range.
+  distance_ = ozz::math::Max(distance_ * powf(.85f, _wheel_steps), kNear * 10.f);
+}
+
 Camera::Controls Camera::UpdateControls(GLFWwindow* _window,
                                         float _delta_time) {
   Controls controls = {false, false, false, false};

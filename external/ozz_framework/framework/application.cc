@@ -436,6 +436,15 @@ bool Application::Display() {
   if (success) {
     success = OnDearImGui();
   }
+  // [HyperPoseDemo change] Mouse wheel zooms the camera, unless Dear ImGui uses
+  // the mouse (e.g. scrolling a list). Read within the frame, as EndFrame resets
+  // the wheel; the camera view is rebuilt on next update.
+  {
+    const ImGuiIO& io = ::ImGui::GetIO();
+    if (io.MouseWheel != 0.f && !io.WantCaptureMouse) {
+      camera_->Zoom(io.MouseWheel);
+    }
+  }
   ::ImGui::Render();
   ImGui_ImplOpenGL3_RenderDrawData(::ImGui::GetDrawData());
 
