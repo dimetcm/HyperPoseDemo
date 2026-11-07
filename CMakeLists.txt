@@ -39,7 +39,9 @@ add_library(hyperpose_common STATIC
   src/common/anim_utils.h
   src/common/anim_utils.cpp
   src/common/retarget.h
-  src/common/retarget.cpp)
+  src/common/retarget.cpp
+  src/common/point_field.h
+  src/common/point_field.cpp)
 target_include_directories(hyperpose_common PUBLIC src)
 target_link_libraries(hyperpose_common PUBLIC sample_framework)
 
@@ -55,6 +57,12 @@ target_compile_definitions(AnimPreview PRIVATE HYPERPOSE_ASSETS_DIR="${CMAKE_SOU
 # Asset pipeline: rescales/builds raw archives from fbx2ozz (see Tools/convert_fbx.py).
 add_executable(ozz_fixup Tools/ozz_fixup/main.cpp)
 target_link_libraries(ozz_fixup PRIVATE ozz_animation_offline ozz_animation ozz_options ozz_base)
+
+# Point field generation (see src/common/point_field.h).
+add_executable(pointfield_gen Tools/pointfield_gen/main.cpp)
+target_link_libraries(pointfield_gen PRIVATE hyperpose_common)
+add_executable(pointfield_stats Tools/pointfield_stats/main.cpp)
+target_link_libraries(pointfield_stats PRIVATE hyperpose_common)
 
 # fbx2mesh (copied from ozz samples, patched): extracts skinned meshes to the
 # framework's mesh.ozz format.

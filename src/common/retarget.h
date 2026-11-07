@@ -30,8 +30,9 @@ class Retargeter {
              const ozz::animation::Skeleton& _target);
 
   // Computes target model-space matrices from source model-space matrices.
-  void Run(ozz::span<const ozz::math::Float4x4> _source_models,
-           ozz::span<ozz::math::Float4x4> _target_models) const;
+  void Run(
+      ozz::span<const ozz::math::Float4x4> _source_joint_model_transforms,
+      ozz::span<ozz::math::Float4x4> _target_joint_model_transforms) const;
 
   int num_mapped() const { return num_mapped_; }
 

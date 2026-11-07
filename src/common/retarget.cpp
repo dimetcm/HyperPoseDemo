@@ -266,8 +266,9 @@ bool Retargeter::Setup(const ozz::animation::Skeleton& _source,
   return num_mapped_ >= 8;
 }
 
-void Retargeter::Run(ozz::span<const math::Float4x4> _source_models,
-                     ozz::span<math::Float4x4> _target_models) const {
+void Retargeter::Run(
+    ozz::span<const math::Float4x4> _source_joint_model_transforms,
+    ozz::span<math::Float4x4> _target_joint_model_transforms) const {
   const math::Quaternion inv_facing = Conjugate(facing_);
   for (size_t j = 0; j < joints_.size(); ++j) {
     const Joint& joint = joints_[j];
@@ -282,7 +283,7 @@ void Retargeter::Run(ozz::span<const math::Float4x4> _source_models,
       // World-space rotation of the source bone since its rest pose, expressed
       // in the target facing, applied on top of the aligned target rest bone.
       const math::Quaternion source_rotation =
-          ExtractRotation(_source_models[joint.source]);
+          ExtractRotation(_source_joint_model_transforms[joint.source]);
       const math::Quaternion delta =
           source_rotation * Conjugate(source_rest_rotations_[joint.source]);
       rotation = Normalize(facing_ * delta * inv_facing * joint.rest_alignment *
@@ -294,7 +295,8 @@ void Retargeter::Run(ozz::span<const math::Float4x4> _source_models,
     math::Float3 translation;
     if (joint.hips) {
       math::Float3 source_hips;
-      math::Store3PtrU(_source_models[joint.source].cols[3], &source_hips.x);
+      math::Store3PtrU(_source_joint_model_transforms[joint.source].cols[3],
+                       &source_hips.x);
       translation = TransformVector(facing_, source_hips * hips_scale_);
     } else {
       translation = parent_translation +
@@ -303,7 +305,7 @@ void Retargeter::Run(ozz::span<const math::Float4x4> _source_models,
 
     model_rotations_[j] = rotation;
     model_translations_[j] = translation;
-    _target_models[j] = math::Float4x4::FromAffine(
+    _target_joint_model_transforms[j] = math::Float4x4::FromAffine(
         math::simd_float4::Load3PtrU(&translation.x),
         math::simd_float4::LoadPtrU(&rotation.x), math::simd_float4::one());
   }

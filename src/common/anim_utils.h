@@ -31,12 +31,13 @@ bool SamplePose(const ozz::animation::Animation& _animation,
                 const ozz::animation::Skeleton& _skeleton, float _ratio,
                 ozz::animation::SamplingJob::Context* _context,
                 ozz::span<ozz::math::SoaTransform> _locals,
-                ozz::span<ozz::math::Float4x4> _models);
+                ozz::span<ozz::math::Float4x4> _joint_model_transforms);
 
 // Fills _skinning_matrices (at least _mesh.joint_remaps.size() long) from
 // model-space joint matrices.
-void ComputeSkinningMatrices(const ozz::sample::Mesh& _mesh,
-                             ozz::span<const ozz::math::Float4x4> _models,
-                             ozz::span<ozz::math::Float4x4> _skinning_matrices);
+void ComputeSkinningMatrices(
+    const ozz::sample::Mesh& _mesh,
+    ozz::span<const ozz::math::Float4x4> _joint_model_transforms,
+    ozz::span<ozz::math::Float4x4> _skinning_matrices);
 
 }  // namespace hyperpose

@@ -35,7 +35,7 @@ bool SamplePose(const ozz::animation::Animation& _animation,
                 const ozz::animation::Skeleton& _skeleton, float _ratio,
                 ozz::animation::SamplingJob::Context* _context,
                 ozz::span<ozz::math::SoaTransform> _locals,
-                ozz::span<ozz::math::Float4x4> _models) {
+                ozz::span<ozz::math::Float4x4> _joint_model_transforms) {
   ozz::animation::SamplingJob sampling_job;
   sampling_job.animation = &_animation;
   sampling_job.context = _context;
@@ -48,17 +48,19 @@ bool SamplePose(const ozz::animation::Animation& _animation,
   ozz::animation::LocalToModelJob ltm_job;
   ltm_job.skeleton = &_skeleton;
   ltm_job.input = _locals;
-  ltm_job.output = _models;
+  ltm_job.output = _joint_model_transforms;
   return ltm_job.Run();
 }
 
-void ComputeSkinningMatrices(const ozz::sample::Mesh& _mesh,
-                             ozz::span<const ozz::math::Float4x4> _models,
-                             ozz::span<ozz::math::Float4x4> _skinning_matrices) {
+void ComputeSkinningMatrices(
+    const ozz::sample::Mesh& _mesh,
+    ozz::span<const ozz::math::Float4x4> _joint_model_transforms,
+    ozz::span<ozz::math::Float4x4> _skinning_matrices) {
   assert(_skinning_matrices.size() >= _mesh.joint_remaps.size());
   for (size_t i = 0; i < _mesh.joint_remaps.size(); ++i) {
     _skinning_matrices[i] =
-        _models[_mesh.joint_remaps[i]] * _mesh.inverse_bind_poses[i];
+        _joint_model_transforms[_mesh.joint_remaps[i]] *
+        _mesh.inverse_bind_poses[i];
   }
 }
 
