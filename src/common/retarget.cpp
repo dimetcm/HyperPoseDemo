@@ -185,8 +185,8 @@ bool Retargeter::Setup(const ozz::animation::Skeleton& _source,
   const ozz::vector<int> target_map = MapCanonical(_target);
 
   ozz::vector<math::Float3> source_positions, target_positions;
-  ozz::vector<math::Quaternion> target_rotations;
-  RestModel(_source, &source_rest_rotations_, &source_positions);
+  ozz::vector<math::Quaternion> source_rotations, target_rotations;
+  RestModel(_source, &source_rotations, &source_positions);
   RestModel(_target, &target_rotations, &target_positions);
 
   // Requires hips and both thighs to align facing and scale.
@@ -223,9 +223,6 @@ bool Retargeter::Setup(const ozz::animation::Skeleton& _source,
   for (int j = 0; j < num_joints; ++j) {
     Joint& joint = joints_[j];
     joint.parent = parents[j];
-    joint.rest_model_rotation = target_rotations[j];
-    joint.rest_model_translation = target_positions[j];
-    joint.rest_alignment = math::Quaternion::identity();
     if (joint.parent >= 0) {
       const math::Quaternion inv_parent = Conjugate(target_rotations[joint.parent]);
       joint.rest_local_rotation = Normalize(inv_parent * target_rotations[j]);
@@ -237,6 +234,7 @@ bool Retargeter::Setup(const ozz::animation::Skeleton& _source,
     }
   }
 
+  const math::Quaternion inv_facing = Conjugate(facing_);
   for (size_t b = 0; b < bones.size(); ++b) {
     const int s = source_map[b], t = target_map[b];
     if (s < 0 || t < 0) {
@@ -248,17 +246,19 @@ bool Retargeter::Setup(const ozz::animation::Skeleton& _source,
     ++num_mapped_;
 
     // Aligns the rest bone direction, when the aim bone exists on both sides.
+    math::Quaternion rest_alignment = math::Quaternion::identity();
     const int aim = bones[b].aim.empty() ? -1 : FindCanonical(bones[b].aim);
-    if (aim < 0 || source_map[aim] < 0 || target_map[aim] < 0) {
-      continue;
+    if (aim >= 0 && source_map[aim] >= 0 && target_map[aim] >= 0) {
+      const math::Float3 source_dir = TransformVector(
+          facing_, source_positions[source_map[aim]] - source_positions[s]);
+      const math::Float3 target_dir =
+          target_positions[target_map[aim]] - target_positions[t];
+      if (LengthSqr(source_dir) > 1e-8f && LengthSqr(target_dir) > 1e-8f) {
+        rest_alignment = math::Quaternion::FromVectors(target_dir, source_dir);
+      }
     }
-    const math::Float3 source_dir = TransformVector(
-        facing_, source_positions[source_map[aim]] - source_positions[s]);
-    const math::Float3 target_dir =
-        target_positions[target_map[aim]] - target_positions[t];
-    if (LengthSqr(source_dir) > 1e-8f && LengthSqr(target_dir) > 1e-8f) {
-      joint.rest_alignment = math::Quaternion::FromVectors(target_dir, source_dir);
-    }
+    joint.offset = Normalize(Conjugate(source_rotations[s]) * inv_facing *
+                             rest_alignment * target_rotations[t]);
   }
 
   model_rotations_.resize(num_joints);
@@ -269,7 +269,6 @@ bool Retargeter::Setup(const ozz::animation::Skeleton& _source,
 void Retargeter::Run(
     ozz::span<const math::Float4x4> _source_joint_model_transforms,
     ozz::span<math::Float4x4> _target_joint_model_transforms) const {
-  const math::Quaternion inv_facing = Conjugate(facing_);
   for (size_t j = 0; j < joints_.size(); ++j) {
     const Joint& joint = joints_[j];
     const bool has_parent = joint.parent >= 0;
@@ -281,13 +280,11 @@ void Retargeter::Run(
     math::Quaternion rotation;
     if (joint.source >= 0) {
       // World-space rotation of the source bone since its rest pose, expressed
-      // in the target facing, applied on top of the aligned target rest bone.
-      const math::Quaternion source_rotation =
-          ExtractRotation(_source_joint_model_transforms[joint.source]);
-      const math::Quaternion delta =
-          source_rotation * Conjugate(source_rest_rotations_[joint.source]);
-      rotation = Normalize(facing_ * delta * inv_facing * joint.rest_alignment *
-                           joint.rest_model_rotation);
+      // in the target facing, applied on top of the aligned target rest bone
+      // (constant parts folded into offset, see Joint).
+      rotation = Normalize(
+          facing_ * ExtractRotation(_source_joint_model_transforms[joint.source]) *
+          joint.offset);
     } else {
       rotation = Normalize(parent_rotation * joint.rest_local_rotation);
     }

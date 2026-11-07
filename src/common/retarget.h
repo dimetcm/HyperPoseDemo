@@ -43,13 +43,15 @@ class Retargeter {
     bool hips = false;
     ozz::math::Quaternion rest_local_rotation;
     ozz::math::Float3 rest_local_translation;
-    ozz::math::Quaternion rest_model_rotation;
-    ozz::math::Float3 rest_model_translation;
-    // Rotates the target rest bone onto the (facing aligned) source rest bone.
-    ozz::math::Quaternion rest_alignment;
+    // Constant part of mapped joints model rotation, folded from rest poses:
+    //   model = facing * source_model * offset, with
+    //   offset = inverse(source_rest) * inverse(facing) * rest_alignment *
+    //            target_rest
+    // where rest_alignment rotates the target rest bone onto the (facing
+    // aligned) source rest bone.
+    ozz::math::Quaternion offset;
   };
   ozz::vector<Joint> joints_;
-  ozz::vector<ozz::math::Quaternion> source_rest_rotations_;
 
   ozz::math::Quaternion facing_;  // Source to target facing rotation.
   float hips_scale_ = 1.f;
