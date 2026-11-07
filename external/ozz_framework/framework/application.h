@@ -118,6 +118,17 @@ class Application {
   // OnDestroy is called in any case.
   virtual bool OnFloatingGui(ImGui* _im_gui);
 
+  // [HyperPoseDemo change] Dear ImGui frame, drawn on top of everything else.
+  // Use ::ImGui:: (Dear ImGui) as ImGui:: here names the ozz gui interface.
+  virtual bool OnDearImGui();
+
+ protected:
+  // [HyperPoseDemo change] Horizontal space (window coordinates) reserved on
+  // the left for application UI; ozz framework forms are shifted right by it.
+  float gui_left_inset_ = 0.f;
+
+ private:
+
   // Provides display event to the inheriting application.
   // This function is called in between the clear and swap functions.
   // OnDisplay can return false which will in turn stop the loop and exit the

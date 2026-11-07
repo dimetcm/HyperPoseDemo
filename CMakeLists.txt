@@ -38,6 +38,21 @@ add_executable(HyperPoseDemo src/main.cpp)
 target_link_libraries(HyperPoseDemo PRIVATE sample_framework)
 set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT HyperPoseDemo)
 
+# Animation browser/preview.
+add_executable(AnimPreview src/preview.cpp src/retarget.h src/retarget.cpp)
+target_link_libraries(AnimPreview PRIVATE sample_framework)
+target_compile_definitions(AnimPreview PRIVATE HYPERPOSE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/Assets")
+
 # Asset pipeline: rescales/builds raw archives from fbx2ozz (see Tools/convert_fbx.py).
 add_executable(ozz_fixup Tools/ozz_fixup/main.cpp)
 target_link_libraries(ozz_fixup PRIVATE ozz_animation_offline ozz_animation ozz_options ozz_base)
+
+# fbx2mesh (copied from ozz samples, patched): extracts skinned meshes to the
+# framework's mesh.ozz format.
+if(TARGET ozz_animation_fbx)
+  add_executable(fbx2mesh
+    external/ozz_framework/tools/fbx2mesh.cc
+    external/ozz_framework/framework/mesh.cc)
+  target_include_directories(fbx2mesh PRIVATE external/ozz_framework)
+  target_link_libraries(fbx2mesh PRIVATE ozz_animation_fbx ozz_animation ozz_options ozz_base)
+endif()

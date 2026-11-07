@@ -42,6 +42,12 @@
 #include <emscripten/html5.h>
 #endif  // __EMSCRIPTEN__
 
+// [HyperPoseDemo change] Dear ImGui. Angle brackets so framework/imgui.h (the
+// ozz gui) next to this file isn't picked instead.
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_opengl3.h>
+
 #include "framework/image.h"
 #include "framework/internal/camera.h"
 #include "framework/internal/imgui_impl.h"
@@ -79,11 +85,13 @@ static bool ResolutionCheck(const ozz::options::Option& _option,
                             int /*_argc*/) {
   const ozz::options::IntOption& option =
       static_cast<const ozz::options::IntOption&>(_option);
-  return option >= 0 && option < kNumPresets;
+  return option >= -1 && option < kNumPresets;
 }
 
-OZZ_OPTIONS_DECLARE_INT_FN(resolution, "Resolution index (0 to 17).", 5, false,
-                           &ResolutionCheck);
+// [HyperPoseDemo change] Defaults to -1: 80% of the monitor work area.
+OZZ_OPTIONS_DECLARE_INT_FN(
+    resolution, "Resolution index (0 to 16), or -1 to fit the monitor.", -1,
+    false, &ResolutionCheck);
 
 namespace ozz {
 namespace sample {
@@ -127,7 +135,8 @@ int Application::Run(int _argc, const char** _argv, const char* _version,
   }
 
   // Fetch initial resolution.
-  window_size_ = resolution_presets[OPTIONS_resolution];
+  // [HyperPoseDemo change] -1 is resolved from the monitor once glfw is up.
+  window_size_ = resolution_presets[OPTIONS_resolution >= 0 ? OPTIONS_resolution : 5];
 
 #ifdef __APPLE__
   // On OSX, when run from Finder, working path is the root path. This does not
@@ -171,9 +180,25 @@ int Application::Run(int _argc, const char** _argv, const char* _version,
     emscripten::glfw3::SetNextWindowCanvasSelector("sample_canvas");
 #endif  // __EMSCRIPTEN__
 
+    // [HyperPoseDemo change] Fit the window to the primary monitor work area.
+    int work_x = 0, work_y = 0, work_w = 0, work_h = 0;
+    if (OPTIONS_resolution < 0) {
+      if (GLFWmonitor* monitor = glfwGetPrimaryMonitor()) {
+        glfwGetMonitorWorkarea(monitor, &work_x, &work_y, &work_w, &work_h);
+      }
+      if (work_w > 0 && work_h > 0) {
+        window_size_ = {static_cast<int>(work_w * .8f),
+                        static_cast<int>(work_h * .8f)};
+      }
+    }
+
     // Initializes rendering before looping.
     window_ = glfwCreateWindow(window_size_.width, window_size_.height, _title,
                                nullptr, nullptr);
+    if (window_ && work_w > 0 && work_h > 0) {
+      glfwSetWindowPos(window_, work_x + (work_w - window_size_.width) / 2,
+                       work_y + (work_h - window_size_.height) / 2);
+    }
     if (!window_) {
       log::Err() << "Failed to open OpenGL window. Required OpenGL version is "
                  << gl_version_major << "." << gl_version_minor << "."
@@ -220,10 +245,29 @@ int Application::Run(int _argc, const char** _argv, const char* _version,
         // matrices.
         Resize();
 
+        // [HyperPoseDemo change] Dear ImGui setup, scaled to monitor DPI.
+        // IMGUI_CHECKVERSION() expanded: its unqualified ImGui:: would resolve
+        // to ozz::sample::ImGui in this namespace.
+        ::ImGui::DebugCheckVersionAndDataLayout(
+            IMGUI_VERSION, sizeof(ImGuiIO), sizeof(ImGuiStyle), sizeof(ImVec2),
+            sizeof(ImVec4), sizeof(ImDrawVert), sizeof(ImDrawIdx));
+        ::ImGui::CreateContext();
+        ::ImGui::GetIO().IniFilename = nullptr;
+        ::ImGui::StyleColorsDark();
+        float dpi_scale;
+        glfwGetWindowContentScale(window_, &dpi_scale, nullptr);
+        ::ImGui::GetStyle().ScaleAllSizes(dpi_scale);
+        ::ImGui::GetStyle().FontScaleDpi = dpi_scale;
+        ImGui_ImplGlfw_InitForOpenGL(window_, true);
+        ImGui_ImplOpenGL3_Init("#version 150");
+
         // Loop the sample.
         success = Loop();
 
         // Ending sample, releases resources.
+        ImGui_ImplOpenGL3_Shutdown();
+        ImGui_ImplGlfw_Shutdown();
+        ::ImGui::DestroyContext();
         shooter_.reset();
         im_gui_.reset();
       }
@@ -385,6 +429,16 @@ bool Application::Display() {
     success = Gui();
   }
 
+  // [HyperPoseDemo change] Dear ImGui, on top of the ozz gui.
+  ImGui_ImplOpenGL3_NewFrame();
+  ImGui_ImplGlfw_NewFrame();
+  ::ImGui::NewFrame();
+  if (success) {
+    success = OnDearImGui();
+  }
+  ::ImGui::Render();
+  ImGui_ImplOpenGL3_RenderDrawData(::ImGui::GetDrawData());
+
   // Capture back buffer.
   if (capture_screenshot_ || capture_video_) {
     shooter_->Capture(GL_BACK);
@@ -468,6 +522,8 @@ bool Application::Gui() {
   // Finds gui area.
   const float kGuiMargin = 2.f;
   ozz::math::RectInt window_rect{0, 0, window_size_.width, window_size_.height};
+  // [HyperPoseDemo change] Left edge of ozz forms, after app reserved space.
+  const float left = gui_left_inset_ + kGuiMargin;
 
   // Fills ImGui's input structure.
   internal::ImGuiImpl::Inputs input;
@@ -485,7 +541,7 @@ bool Application::Gui() {
   // Downcast to public imgui.
   ImGui* im_gui = im_gui_.get();
 
-  if (window_rect.width > (kGuiMargin + kFormWidth) * 2.f) {
+  if (window_rect.width - gui_left_inset_ > (kGuiMargin + kFormWidth) * 2.f) {
     // Do floating gui.
     if (!show_help_) {
       success = OnFloatingGui(im_gui);
@@ -493,8 +549,8 @@ bool Application::Gui() {
 
     // Help gui.
     {
-      math::RectFloat rect{kGuiMargin, kGuiMargin,
-                           window_rect.width - kGuiMargin * 2.f,
+      math::RectFloat rect{left, kGuiMargin,
+                           window_rect.width - left - kGuiMargin,
                            window_rect.height - kGuiMargin * 2.f};
       // Doesn't constrain form is it's opened, so it covers all screen.
       ImGui::Form form(im_gui, "Show help", rect, &show_help_, !show_help_);
@@ -508,7 +564,7 @@ bool Application::Gui() {
       if (success) {
         static bool open = true;
         math::RectFloat rect{
-            kGuiMargin, kGuiMargin, kFormWidth,
+            left, kGuiMargin, kFormWidth,
             window_rect.height - kGuiMargin * 2.f - kHelpMargin};
         ImGui::Form form(im_gui, "Framework", rect, &open, true);
         if (open) {
@@ -686,6 +742,8 @@ bool Application::OnUpdate(float, float) { return true; }
 bool Application::OnGui(ImGui*) { return true; }
 
 bool Application::OnFloatingGui(ImGui*) { return true; }
+
+bool Application::OnDearImGui() { return true; }
 
 bool Application::OnDisplay(Renderer*) { return true; }
 

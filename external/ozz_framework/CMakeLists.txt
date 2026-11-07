@@ -13,8 +13,26 @@ set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
 add_subdirectory(${ozz_SOURCE_DIR}/extern/glfw ${CMAKE_CURRENT_BINARY_DIR}/glfw)
 
+# Dear ImGui (GLFW + OpenGL3 backends), drawn on top of the ozz gui.
+FetchContent_Declare(imgui
+  GIT_REPOSITORY https://github.com/ocornut/imgui.git
+  GIT_TAG v1.93.0
+  GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(imgui)
+add_library(imgui STATIC
+  ${imgui_SOURCE_DIR}/imgui.cpp
+  ${imgui_SOURCE_DIR}/imgui_draw.cpp
+  ${imgui_SOURCE_DIR}/imgui_tables.cpp
+  ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+  ${imgui_SOURCE_DIR}/imgui_demo.cpp
+  ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+  ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
+target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
+
 target_link_libraries(sample_framework
-  PUBLIC ozz_geometry ozz_animation_offline ozz_animation ozz_options ozz_base
+  PUBLIC ozz_geometry ozz_animation_offline ozz_animation ozz_options ozz_base imgui
   PRIVATE glfw OpenGL::GL)
 target_compile_definitions(sample_framework PRIVATE GL_SILENCE_DEPRECATION)
 target_include_directories(sample_framework
