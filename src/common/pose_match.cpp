@@ -49,6 +49,22 @@ float RootHeading(const math::Float4x4& _root, int _axis) {
   return std::atan2(-v.z, v.x);
 }
 
+void AlignToOrigin(ozz::span<math::Float4x4> _models, int _axis) {
+  if (_models.empty()) {
+    return;
+  }
+  math::Float3 root;
+  math::Store3PtrU(_models[0].cols[3], &root.x);
+  const float heading = RootHeading(_models[0], _axis);
+  const math::Float4x4 align =
+      math::Float4x4::FromAxisAngle(math::simd_float4::y_axis(),
+                                    math::simd_float4::Load1(-heading)) *
+      math::Float4x4::Translation(math::simd_float4::Load(-root.x, 0.f, -root.z, 1.f));
+  for (auto& model : _models) {
+    model = align * model;
+  }
+}
+
 bool ExtractPoseFeatures(const ozz::animation::Animation& _animation,
                          const ozz::animation::Skeleton& _skeleton,
                          float _frame_rate, PoseFeatures* _features) {

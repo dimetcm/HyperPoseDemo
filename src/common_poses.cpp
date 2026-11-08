@@ -8,8 +8,6 @@
 #include <cmath>
 #include <filesystem>
 #include <future>
-#include <memory>
-#include <random>
 #include <string>
 #include <vector>
 
@@ -19,7 +17,8 @@
 #include "common/character_view.h"
 #include "common/clip_library.h"
 #include "common/clip_player.h"
-#include "common/pose_cluster.h"
+#include "common/common_pose.h"
+#include "common/pose_gallery.h"
 #include "common/pose_match.h"
 #include "framework/application.h"
 #include "framework/imgui.h"
@@ -49,101 +48,15 @@ OZZ_OPTIONS_DECLARE_STRING(clip, "Clip to preview at startup (path).", "",
 
 namespace {
 
-// A clip of the pose set, with the time range to consider (trimming).
-struct PoseSetEntry {
-  fs::path path;
-  float duration = 0.f;
-  float begin = 0.f;
-  float end = -1.f;  // Negative: clip end.
-};
-
-// A common pose: the pose set frames that look alike, as clip + time, ordered
-// by distance to the pose (cluster center), closest (most typical) first.
-struct CommonPose {
-  struct Frame {
-    int clip;        // Index in ClusterResult::clips.
-    float time;      // Seconds.
-    float distance;  // RMS joint distance to the cluster center (m).
-  };
-  std::vector<Frame> frames;
-  float spread = 0.f;  // RMS of frame distances (m).
-};
-
-// Clustering output.
-struct ClusterResult {
-  std::vector<fs::path> clips;
-  std::vector<CommonPose> poses;  // Most frames first.
-  int num_frames = 0;
-  double seconds = 0.;
-  std::string error;
-};
+using hyperpose::CommonPose;
+using hyperpose::PoseSetEntry;
 
 // Frame rate the clips were converted at (Tools/convert_fbx.py), for frame
 // numbers in debug text.
 const float kClipFrameRate = 30.f;
 
-// Cluster gallery layout: poses per row, and the side (z sign) rows go to.
-// Aligned poses face +z, so -z is behind.
-const int kGalleryColumns = 8;
-const float kGallerySide = -1.f;
-
 const float kRates[] = {5.f, 10.f, 15.f};
 const char* kRateLabels[] = {"5 Hz", "10 Hz", "15 Hz"};
-
-// Extracts pose features of every entry frame, then clusters them. Runs on a
-// worker thread: only reads its arguments.
-ClusterResult FindCommonPoses(std::vector<PoseSetEntry> _entries,
-                              const ozz::animation::Skeleton* _skeleton,
-                              float _rate, int _k, uint32_t _seed) {
-  const auto start = std::chrono::steady_clock::now();
-  ClusterResult result;
-  struct Sample {
-    int clip;
-    float time;
-  };
-  std::vector<Sample> samples;
-  std::vector<float> data;
-  ozz::animation::Animation animation;
-  hyperpose::PoseFeatures features;
-  for (size_t e = 0; e < _entries.size(); ++e) {
-    const PoseSetEntry& entry = _entries[e];
-    result.clips.push_back(entry.path);
-    if (!ozz::sample::LoadAnimation(entry.path.string().c_str(), &animation) ||
-        animation.num_tracks() != _skeleton->num_joints() ||
-        !hyperpose::ExtractPoseFeatures(animation, *_skeleton, _rate, &features)) {
-      result.error = "Failed to load " + entry.path.filename().string();
-      return result;
-    }
-    const float end = entry.end < 0.f ? animation.duration() : entry.end;
-    for (int frame = 0; frame < features.num_frames; ++frame) {
-      const float time = frame / _rate;
-      if (time < entry.begin || time > end) {
-        continue;
-      }
-      samples.push_back({static_cast<int>(e), time});
-      const math::Float3* p = &features.positions[frame * features.num_joints];
-      for (int j = 0; j < features.num_joints; ++j) {
-        data.insert(data.end(), {p[j].x, p[j].y, p[j].z});
-      }
-    }
-  }
-  result.num_frames = static_cast<int>(samples.size());
-  for (const hyperpose::PoseCluster& cluster :
-       hyperpose::ClusterPoses(data, _skeleton->num_joints(), _k, _seed)) {
-    CommonPose pose;
-    pose.spread = cluster.spread;
-    pose.frames.reserve(cluster.members.size());
-    for (size_t m = 0; m < cluster.members.size(); ++m) {
-      const Sample& sample = samples[cluster.members[m]];
-      pose.frames.push_back({sample.clip, sample.time, cluster.distances[m]});
-    }
-    result.poses.push_back(std::move(pose));
-  }
-  result.seconds = std::chrono::duration<double>(
-                       std::chrono::steady_clock::now() - start)
-                       .count();
-  return result;
-}
 
 }  // namespace
 
@@ -174,20 +87,17 @@ class CommonPosesApplication : public ozz::sample::Application {
       result_ = job_.get();
       status_ = result_.error;
       LogResult();
-      BuildClusterPoses();
-      BuildGallery();
+      if (!gallery_.Build(result_, &skeleton(), clip_skeleton_.heading_axis())) {
+        status_ = gallery_.error();
+      }
       SelectPose(result_.poses.empty() ? -1 : 0);
     }
     if (previewing_) {
       UpdatePreview(_dt);
     }
-    if (show_gallery_ && animate_gallery_) {
-      UpdateGallery(_dt);
-    }
     // Before posing the character for the displayed pose, as baking poses it.
-    if (show_gallery_ && !animate_gallery_ && !cluster_poses_.empty() &&
-        character_.posed() && !GalleryBaked()) {
-      BakeClusterPoses();
+    if (show_gallery_) {
+      gallery_.Update(_dt, &character_);
     }
     if (pose_valid_) {
       character_.Update(make_span(models_));
@@ -205,44 +115,18 @@ class CommonPosesApplication : public ozz::sample::Application {
       AddLabel(math::Float4x4::identity(), make_span(models_), "", clip_.path(),
                clip_.time, clip_.duration());
     }
-    // Every common pose, in rows behind the displayed pose. Animated: random
-    // frames of the pose, skinned live (the character is re-posed for each,
-    // then restored). Static: most typical frame, skinned once.
-    if (show_gallery_ && animate_gallery_ && !gallery_.empty()) {
-      const bool show_character = draw_mesh_ && character_.posed();
-      for (size_t c = 0; c < gallery_.size(); ++c) {
-        const math::Float4x4 transform = GalleryTransform(static_cast<int>(c));
-        const auto models = make_span(gallery_[c]->models);
-        if (show_character) {
-          character_.Update(models);
-          success &= character_.Draw(_renderer, transform);
-        }
-        if (draw_skeleton_ || !show_character) {
-          success &= _renderer->DrawPosture(skeleton(), models, transform);
-        }
-        const GallerySlot& slot = *gallery_[c];
-        AddLabel(transform, models, "#" + std::to_string(c + 1) + " ",
-                 slot.clip.path(), slot.clip.time, slot.clip.duration());
-      }
-      if (pose_valid_) {
+    // Every common pose, in rows behind the displayed pose. Drawing the
+    // animated gallery re-poses the character, so it's restored after.
+    if (show_gallery_ && !gallery_.empty()) {
+      success &= gallery_.Draw(_renderer, &character_, draw_mesh_, draw_skeleton_);
+      if (pose_valid_ && gallery_.animate) {
         character_.Update(make_span(models_));
       }
-    } else if (show_gallery_ && !cluster_poses_.empty()) {
-      const bool show_character = draw_mesh_ && GalleryBaked();
-      for (size_t c = 0; c < cluster_poses_.size(); ++c) {
-        const math::Float4x4 transform = GalleryTransform(static_cast<int>(c));
-        if (show_character) {
-          success &= hyperpose::CharacterView::DrawBaked(
-              _renderer, cluster_meshes_[c], transform);
-        }
-        if (draw_skeleton_ || !show_character) {
-          success &= _renderer->DrawPosture(
-              skeleton(), make_span(cluster_poses_[c]), transform);
-        }
-        const CommonPose::Frame& frame = result_.poses[c].frames.front();
-        AddLabel(transform, make_span(cluster_poses_[c]),
-                 "#" + std::to_string(c + 1) + " ", result_.clips[frame.clip],
-                 frame.time, -1.f);
+      for (int c = 0; c < gallery_.size(); ++c) {
+        const hyperpose::PoseGallery::Shown pose = gallery_.shown(c);
+        AddLabel(gallery_.Transform(c), pose.models,
+                 "#" + std::to_string(c + 1) + " ", *pose.clip, pose.time,
+                 pose.duration);
       }
     }
     return success;
@@ -325,19 +209,6 @@ class CommonPosesApplication : public ozz::sample::Application {
     return success;
   }
 
-  // Gallery slot of cluster _c: rows of up to kGalleryColumns, largest
-  // cluster first, left to right, starting one row behind the origin.
-  math::Float4x4 GalleryTransform(int _c) const {
-    const int count = static_cast<int>(result_.poses.size());
-    const int columns = std::max(1, std::min(count, kGalleryColumns));
-    const int row = _c / columns;
-    const int column = _c % columns;
-    const int in_row = std::min(columns, count - row * columns);
-    const float x = (column - (in_row - 1) * .5f) * gallery_spacing_;
-    const float z = kGallerySide * (row + 1) * gallery_spacing_ * 1.5f;
-    return math::Float4x4::Translation(math::simd_float4::Load(x, 0.f, z, 1.f));
-  }
-
   bool OnGui(ozz::sample::ImGui* _im_gui) override {
     if (!character_.meshes().empty()) {
       static bool display_open = true;
@@ -418,13 +289,10 @@ class CommonPosesApplication : public ozz::sample::Application {
       bounds = ozz::sample::ComputePostureBounds(make_span(models),
                                                  math::Float4x4::identity());
     }
-    if (show_gallery_ && !cluster_poses_.empty()) {
+    if (show_gallery_ && !gallery_.empty()) {
       // Clip skeleton poses: close enough to the character for framing.
-      for (size_t c = 0; c < cluster_poses_.size(); ++c) {
-        const ozz::math::Box box = ozz::sample::ComputePostureBounds(
-            make_span(cluster_poses_[c]), GalleryTransform(static_cast<int>(c)));
-        bounds = bounds.is_valid() ? Merge(bounds, box) : box;
-      }
+      const ozz::math::Box box = gallery_.Bounds();
+      bounds = bounds.is_valid() ? Merge(bounds, box) : box;
     }
     return bounds;
   }
@@ -436,7 +304,7 @@ class CommonPosesApplication : public ozz::sample::Application {
       return;
     }
     status_.clear();
-    job_ = std::async(std::launch::async, FindCommonPoses, set_, &skeleton(),
+    job_ = std::async(std::launch::async, hyperpose::FindCommonPoses, set_, &skeleton(),
                       kRates[rate_], k_, static_cast<uint32_t>(seed_));
   }
 
@@ -505,9 +373,8 @@ class CommonPosesApplication : public ozz::sample::Application {
       // Everything loaded for the previous skeleton is stale.
       models_.resize(skeleton().num_joints());
       character_.SetClipSkeleton(&skeleton(), clip_skeleton_.path());
-      result_ = ClusterResult();
-      cluster_poses_.clear();
-      gallery_.clear();
+      result_ = hyperpose::CommonPoseResult();
+      gallery_.Clear();
       pose_ = -1;
       previewing_ = false;
       clip_.Unload();
@@ -676,17 +543,17 @@ class CommonPosesApplication : public ozz::sample::Application {
     ImGui::Checkbox("Show all common poses", &show_gallery_);
     ImGui::SetItemTooltip("Every common pose, in rows behind, largest first.");
     ImGui::SameLine();
-    ImGui::Checkbox("Animate", &animate_gallery_);
+    ImGui::Checkbox("Animate", &gallery_.animate);
     ImGui::SetItemTooltip(
         "Each pose plays its clips from a random frame of the pose, switching\n"
         "after the play time. Frames closer to the pose are picked more often.\n"
         "Off: most typical frame, still (cheaper to draw).");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(-FLT_MIN);
-    ImGui::SliderFloat("##spacing", &gallery_spacing_, .5f, 3.f, "spacing %.1f m");
-    ImGui::BeginDisabled(!animate_gallery_);
+    ImGui::SliderFloat("##spacing", &gallery_.spacing, .5f, 3.f, "spacing %.1f m");
+    ImGui::BeginDisabled(!gallery_.animate);
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * .5f);
-    ImGui::SliderFloat("Play time", &play_duration_, .1f, 10.f, "%.1f s",
+    ImGui::SliderFloat("Play time", &gallery_.play_time, .1f, 10.f, "%.1f s",
                        ImGuiSliderFlags_Logarithmic);
     ImGui::SetItemTooltip("How long each picked frame's clip plays before the next pick.");
     ImGui::EndDisabled();
@@ -724,67 +591,6 @@ class CommonPosesApplication : public ozz::sample::Application {
       SampleClip(clip_.path(), clip_.time);
     } else if (pose_ >= 0) {
       ShowFrame(frame_);
-    }
-  }
-
-  // One gallery character per common pose, playing random frames of it.
-  struct GallerySlot {
-    std::discrete_distribution<int> picker;  // Frame index, weighted.
-    int frame = -1;
-    float timer = 0.f;  // Until the next pick (s).
-    hyperpose::ClipPlayer clip;
-    ozz::vector<math::Float4x4> models;
-  };
-
-  void BuildGallery() {
-    gallery_.clear();
-    std::uniform_real_distribution<float> offset(0.f, play_duration_);
-    for (const CommonPose& pose : result_.poses) {
-      auto slot = std::make_unique<GallerySlot>();
-      // Weights: gaussian of the frame distance to the pose, with the pose
-      // spread as deviation, so typical frames come up more often.
-      const float sigma = std::max(pose.spread, 1e-4f);
-      std::vector<double> weights;
-      weights.reserve(pose.frames.size());
-      for (const CommonPose::Frame& frame : pose.frames) {
-        const double x = frame.distance / sigma;
-        weights.push_back(std::exp(-.5 * x * x));
-      }
-      slot->picker = std::discrete_distribution<int>(weights.begin(), weights.end());
-      slot->models.resize(skeleton().num_joints());
-      // Staggered, so the poses don't all switch at once.
-      slot->timer = offset(rng_);
-      PickGalleryFrame(pose, slot.get());
-      gallery_.push_back(std::move(slot));
-    }
-  }
-
-  // Starts playing a weighted random frame of _pose in _slot.
-  bool PickGalleryFrame(const CommonPose& _pose, GallerySlot* _slot) {
-    _slot->frame = _slot->picker(rng_);
-    const CommonPose::Frame& frame = _pose.frames[_slot->frame];
-    const fs::path& clip = result_.clips[frame.clip];
-    if (clip != _slot->clip.path() && !_slot->clip.Load(clip, skeleton())) {
-      return false;
-    }
-    _slot->clip.time = frame.time;
-    return true;
-  }
-
-  void UpdateGallery(float _dt) {
-    for (size_t c = 0; c < gallery_.size(); ++c) {
-      GallerySlot& slot = *gallery_[c];
-      slot.timer -= _dt;
-      slot.clip.Advance(_dt);  // Loops.
-      if (slot.timer <= 0.f) {
-        // Re-armed from the current play time, which the user may change.
-        slot.timer = play_duration_;
-        PickGalleryFrame(result_.poses[c], &slot);
-      }
-      // A failed load keeps the last pose.
-      if (slot.clip.Sample(make_span(slot.models))) {
-        AlignToOrigin(make_span(slot.models));
-      }
     }
   }
 
@@ -837,61 +643,6 @@ class CommonPosesApplication : public ozz::sample::Application {
     ImGui::Separator();
   }
 
-  // Samples the typical pose of every cluster, aligned to the origin.
-  void BuildClusterPoses() {
-    cluster_poses_.clear();
-    cluster_meshes_.clear();  // Re-baked on next update.
-    hyperpose::ClipPlayer player;
-    for (const CommonPose& pose : result_.poses) {
-      const CommonPose::Frame& sample = pose.frames.front();  // Most typical.
-      const fs::path& clip = result_.clips[sample.clip];
-      ozz::vector<math::Float4x4> models(skeleton().num_joints());
-      if ((clip != player.path() && !player.Load(clip, skeleton())) ||
-          !player.Sample(sample.time, make_span(models))) {
-        status_ = "Failed to load " + clip.filename().string();
-        cluster_poses_.clear();
-        return;
-      }
-      AlignToOrigin(make_span(models));
-      cluster_poses_.push_back(std::move(models));
-    }
-  }
-
-  // Skins the character once in each cluster pose, so the gallery is drawn
-  // without per frame skinning. Redone when the character changes.
-  void BakeClusterPoses() {
-    cluster_meshes_.assign(cluster_poses_.size(), {});
-    for (size_t c = 0; c < cluster_poses_.size(); ++c) {
-      character_.Update(make_span(cluster_poses_[c]));
-      if (!character_.Bake(&cluster_meshes_[c])) {
-        cluster_meshes_.clear();
-        break;
-      }
-    }
-    baked_generation_ = character_.generation();
-  }
-
-  bool GalleryBaked() const {
-    return baked_generation_ == character_.generation() &&
-           cluster_meshes_.size() == cluster_poses_.size();
-  }
-
-  // Moves the root above the origin, facing the default heading, so poses
-  // compare from the same viewpoint.
-  void AlignToOrigin(ozz::span<math::Float4x4> _models) const {
-    math::Float3 root;
-    math::Store3PtrU(_models[0].cols[3], &root.x);
-    const float heading =
-        hyperpose::RootHeading(_models[0], clip_skeleton_.heading_axis());
-    const math::Float4x4 align =
-        math::Float4x4::FromAxisAngle(math::simd_float4::y_axis(),
-                                      math::simd_float4::Load1(-heading)) *
-        math::Float4x4::Translation(math::simd_float4::Load(-root.x, 0.f, -root.z, 1.f));
-    for (auto& model : _models) {
-      model = align * model;
-    }
-  }
-
   // Samples _clip at _time into models_, aligned to the origin if enabled.
   bool SampleClip(const fs::path& _clip, float _time) {
     pose_valid_ = false;
@@ -904,7 +655,7 @@ class CommonPosesApplication : public ozz::sample::Application {
       return false;
     }
     if (align_to_origin_) {
-      AlignToOrigin(make_span(models_));
+      hyperpose::AlignToOrigin(make_span(models_), clip_skeleton_.heading_axis());
     }
     pose_valid_ = true;
     return true;
@@ -924,21 +675,14 @@ class CommonPosesApplication : public ozz::sample::Application {
   int k_ = 12;
   int rate_ = 1;  // kRates index.
   int seed_ = 1;
-  std::future<ClusterResult> job_;
-  ClusterResult result_;
+  std::future<hyperpose::CommonPoseResult> job_;
+  hyperpose::CommonPoseResult result_;
   int pose_ = -1;   // Selected common pose.
   int frame_ = 0;   // Shown frame of the selected pose.
 
-
-  // Typical pose of each cluster (clip skeleton, aligned to origin).
-  std::vector<ozz::vector<math::Float4x4>> cluster_poses_;
-  std::vector<ozz::vector<ozz::sample::Mesh>> cluster_meshes_;  // Baked.
-  int baked_generation_ = -1;  // Character generation of cluster_meshes_.
+  // Every common pose, behind the displayed pose.
+  hyperpose::PoseGallery gallery_;
   bool show_gallery_ = true;
-  bool animate_gallery_ = true;
-  float gallery_spacing_ = 1.f;
-  std::vector<std::unique_ptr<GallerySlot>> gallery_;  // Per common pose.
-  std::mt19937 rng_{std::random_device{}()};
 
   // Displayed pose: a clip preview (playing), or a still frame of the
   // selected common pose.
@@ -955,7 +699,6 @@ class CommonPosesApplication : public ozz::sample::Application {
   };
   std::vector<Label> labels_;
   bool debug_text_ = true;
-  float play_duration_ = 1.f;  // Gallery: play time of each picked frame (s).
 };
 
 int main(int _argc, const char** _argv) {

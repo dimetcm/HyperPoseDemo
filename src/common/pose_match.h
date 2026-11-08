@@ -11,6 +11,7 @@
 #include "ozz/base/containers/vector.h"
 #include "ozz/base/maths/simd_math.h"
 #include "ozz/base/maths/vec_float.h"
+#include "ozz/base/span.h"
 
 namespace ozz::animation {
 class Animation;
@@ -43,6 +44,11 @@ float RootHeading(const ozz::math::Float4x4& _root, int _axis);
 
 // Index (0 x, 1 y, 2 z) of the root rest pose axis closest to horizontal.
 int HeadingAxis(const ozz::animation::Skeleton& _skeleton);
+
+// Moves a pose (joint model-space transforms, root first) so the root stands
+// above the origin, facing the default heading (heading 0 on _axis, see
+// HeadingAxis), so poses compare from the same viewpoint.
+void AlignToOrigin(ozz::span<ozz::math::Float4x4> _models, int _axis);
 
 // Rotates _v about the Y axis by _angle radians (right handed, as
 // ozz::math::Quaternion::FromAxisAngle).
