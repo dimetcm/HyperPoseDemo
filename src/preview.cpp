@@ -29,6 +29,7 @@ namespace fs = std::filesystem;
 
 OZZ_OPTIONS_DECLARE_STRING(root, "Folder to browse for .ozz animations.",
                            HYPERPOSE_ASSETS_DIR "/ozz", false)
+OZZ_OPTIONS_DECLARE_STRING(clip, "Clip (.ozz) to load at startup.", "", false)
 
 namespace {
 
@@ -141,6 +142,9 @@ class PreviewApplication : public ozz::sample::Application {
     if (!characters_.empty()) {
       LoadCharacter(0);
     }
+    if (OPTIONS_clip.value()[0]) {
+      Load(fs::path(OPTIONS_clip.value()));
+    }
     return true;
   }
 
@@ -178,7 +182,7 @@ class PreviewApplication : public ozz::sample::Application {
             mesh, make_span(skinning_matrices_), transform);
       }
     }
-    if (draw_skeleton_ || !CharacterPosed()) {
+    if (draw_skeleton_ || !show_character) {
       success &= _renderer->DrawPosture(skeleton_, make_span(models_), transform);
     }
     const PointFieldPreview& pf = point_field_;
