@@ -48,6 +48,8 @@ add_library(hyperpose_common STATIC
   src/common/pose_cluster.cpp
   src/common/clip_library.h
   src/common/clip_library.cpp
+  src/common/clip_player.h
+  src/common/clip_player.cpp
   src/common/character_view.h
   src/common/character_view.cpp)
 target_include_directories(hyperpose_common PUBLIC src)

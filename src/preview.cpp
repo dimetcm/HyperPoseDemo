@@ -13,6 +13,7 @@
 #include "common/anim_utils.h"
 #include "common/character_view.h"
 #include "common/clip_library.h"
+#include "common/clip_player.h"
 #include "common/point_field.h"
 #include "framework/application.h"
 #include "framework/imgui.h"
@@ -78,13 +79,12 @@ class PreviewApplication : public ozz::sample::Application {
   }
 
   bool OnUpdate(float _dt, float) override {
-    if (!loaded_) {
+    if (!clip_.loaded()) {
       return true;
     }
-    controller_.Update(animation_, _dt);
-    if (!hyperpose::SamplePose(animation_, skeleton_, controller_.time_ratio(),
-                               &context_, make_span(locals_),
-                               make_span(models_))) {
+    controller_.Update(clip_.animation(), _dt);
+    if (!clip_.Sample(controller_.time_ratio() * clip_.duration(),
+                      make_span(models_))) {
       return false;
     }
     character_.Update(make_span(models_));
@@ -93,7 +93,7 @@ class PreviewApplication : public ozz::sample::Application {
   }
 
   bool OnDisplay(ozz::sample::Renderer* _renderer) override {
-    if (!loaded_) {
+    if (!clip_.loaded()) {
       return true;
     }
     const auto transform = ozz::math::Float4x4::identity();
@@ -103,7 +103,8 @@ class PreviewApplication : public ozz::sample::Application {
       success &= character_.Draw(_renderer, transform);
     }
     if (draw_skeleton_ || !show_character) {
-      success &= _renderer->DrawPosture(skeleton_, make_span(models_), transform);
+      success &= _renderer->DrawPosture(clip_skeleton_.skeleton(),
+                                        make_span(models_), transform);
     }
     const PointFieldPreview& pf = point_field_;
     if (pf.enabled && !pf.points.empty()) {
@@ -119,13 +120,13 @@ class PreviewApplication : public ozz::sample::Application {
   }
 
   bool OnGui(ozz::sample::ImGui* _im_gui) override {
-    if (!loaded_) {
+    if (!clip_.loaded()) {
       return true;
     }
     static bool open = true;
     ozz::sample::ImGui::OpenClose oc(_im_gui, "Animation control", &open);
     if (open) {
-      controller_.OnGui(animation_, _im_gui);
+      controller_.OnGui(clip_.animation(), _im_gui);
     }
     if (!character_.meshes().empty()) {
       static bool display_open = true;
@@ -177,7 +178,7 @@ class PreviewApplication : public ozz::sample::Application {
   }
 
   ozz::math::Box GetSceneBounds() const override {
-    if (!loaded_) {
+    if (!clip_.loaded()) {
       return ozz::math::Box();
     }
     const auto& models =
@@ -218,7 +219,7 @@ class PreviewApplication : public ozz::sample::Application {
       const auto sampler =
           hyperpose::PointFieldGenerator::FindSampler(kSamplers[pf.sampler].name);
       // Per frame mode reseeds with the frame index, like pointfield_gen.
-      const int frame = static_cast<int>(ratio * animation_.duration() * 30.f);
+      const int frame = static_cast<int>(ratio * clip_.duration() * 30.f);
       start = std::chrono::steady_clock::now();
       pf.samples = per_frame ? sampler(pf.posed_mesh, pf.count, pf.seed + frame)
                              : sampler(pf.rest_mesh, pf.count, pf.seed);
@@ -294,45 +295,28 @@ class PreviewApplication : public ozz::sample::Application {
 
   void Load(const fs::path& _clip) {
     selected_ = _clip;
-    const fs::path skeleton_path = hyperpose::FindClipSkeleton(_clip, library_.root());
-    if (skeleton_path.empty()) {
-      status_ = "No skeleton.ozz found for " + _clip.filename().string();
-      loaded_ = false;
+    clip_.Unload();
+    const auto use = clip_skeleton_.Use(_clip, library_.root(), true);
+    if (use == hyperpose::ClipSkeleton::Result::kFailed) {
+      status_ = clip_skeleton_.error();
       return;
     }
-    bool skeleton_changed = false;
-    if (skeleton_path != skeleton_path_) {
-      skeleton_path_.clear();
-      if (!ozz::sample::LoadSkeleton(skeleton_path.string().c_str(), &skeleton_)) {
-        status_ = "Failed to load " + skeleton_path.string();
-        loaded_ = false;
-        return;
-      }
-      skeleton_path_ = skeleton_path;
-      skeleton_changed = true;
+    if (use == hyperpose::ClipSkeleton::Result::kChanged) {
+      models_.resize(clip_skeleton_.num_joints());
+      character_.SetClipSkeleton(&clip_skeleton_.skeleton(), clip_skeleton_.path());
     }
-    if (!ozz::sample::LoadAnimation(_clip.string().c_str(), &animation_) ||
-        animation_.num_tracks() != skeleton_.num_joints()) {
+    if (!clip_.Load(_clip, clip_skeleton_.skeleton())) {
       status_ = "Failed to load " + _clip.filename().string() +
-                " (or it doesn't match " + skeleton_path.filename().string() + ")";
-      loaded_ = false;
+                " (or it doesn't match " + clip_skeleton_.path().filename().string() +
+                ")";
       return;
     }
-
-    locals_.resize(skeleton_.num_soa_joints());
-    models_.resize(skeleton_.num_joints());
-    context_.Resize(skeleton_.num_joints());
     controller_.set_time_ratio(0.f);
-    const bool was_loaded = loaded_;
-    loaded_ = true;
-    if (skeleton_changed || !was_loaded) {
-      character_.SetClipSkeleton(&skeleton_, skeleton_path_);
-    }
 
     char info[128];
     std::snprintf(info, sizeof(info), "%s: %.1fs, %d joints",
-                  _clip.stem().string().c_str(), animation_.duration(),
-                  skeleton_.num_joints());
+                  _clip.stem().string().c_str(), clip_.duration(),
+                  clip_skeleton_.num_joints());
     status_ = info;
     const std::string& description = library_.Description(_clip.stem().string());
     if (!description.empty()) {
@@ -344,14 +328,11 @@ class PreviewApplication : public ozz::sample::Application {
   fs::path selected_;
   std::string status_;
 
-  // Playback state.
-  bool loaded_ = false;
-  fs::path skeleton_path_;
+  // Playback: time from the ozz playback controller (its gui), sampled by the
+  // clip player.
+  hyperpose::ClipSkeleton clip_skeleton_;
+  hyperpose::ClipPlayer clip_;
   ozz::sample::PlaybackController controller_;
-  ozz::animation::Skeleton skeleton_;
-  ozz::animation::Animation animation_;
-  ozz::animation::SamplingJob::Context context_;
-  ozz::vector<ozz::math::SoaTransform> locals_;
   ozz::vector<ozz::math::Float4x4> models_;
 
   // Character: skeleton + skinned mesh, driven directly or retargeted.

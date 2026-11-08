@@ -14,6 +14,7 @@
 
 #include "common/character_view.h"
 #include "common/clip_library.h"
+#include "common/clip_player.h"
 #include "common/pose_match.h"
 #include "framework/application.h"
 #include "framework/imgui.h"
@@ -121,7 +122,7 @@ class PoseBlendApplication : public ozz::sample::Application {
       success &= character_.Draw(_renderer, transform);
     }
     if (draw_skeleton_ || !show_character) {
-      success &= _renderer->DrawPosture(skeleton_, make_span(models_), transform);
+      success &= _renderer->DrawPosture(skeleton(), make_span(models_), transform);
     }
     return success;
   }
@@ -165,7 +166,7 @@ class PoseBlendApplication : public ozz::sample::Application {
     }
 
     fs::path clicked;
-    if (library_.DrawTable({slots_[0].path, slots_[1].path}, &clicked)) {
+    if (library_.DrawTable({slots_[0].clip.path(), slots_[1].clip.path()}, &clicked)) {
       Assign(pick_, clicked);
     }
     ImGui::End();
@@ -184,20 +185,20 @@ class PoseBlendApplication : public ozz::sample::Application {
 
  private:
   struct Slot {
-    fs::path path;
-    bool loaded = false;
-    ozz::animation::Animation animation;
+    hyperpose::ClipPlayer clip;
     hyperpose::PoseFeatures features;
-    ozz::animation::SamplingJob::Context context;
-    ozz::vector<math::SoaTransform> locals;
   };
+
+  const ozz::animation::Skeleton& skeleton() const {
+    return clip_skeleton_.skeleton();
+  }
 
   // Transition timing, in seconds.
   float TransitionTimeA() const { return transition_.a_frame / kMatchRate; }
   float TransitionTimeB() const { return transition_.b_frame / kMatchRate; }
   float BlendDuration() const { return blend_frames_ / kMatchRate; }
   float TotalDuration() const {
-    return TransitionTimeA() + slots_[1].animation.duration() - TransitionTimeB();
+    return TransitionTimeA() + slots_[1].clip.duration() - TransitionTimeB();
   }
   float LoopBegin() const { return std::max(0.f, TransitionTimeA() - kLoopMargin); }
   float LoopEnd() const {
@@ -207,45 +208,27 @@ class PoseBlendApplication : public ozz::sample::Application {
 
   // Loads a clip into slot A (0) or B (1). Both must share a skeleton.
   void Assign(int _slot, const fs::path& _clip) {
-    const fs::path skeleton_path =
-        hyperpose::FindClipSkeleton(_clip, library_.root());
-    if (skeleton_path.empty()) {
-      status_ = "No skeleton.ozz found for " + _clip.filename().string();
-      return;
-    }
     Slot& slot = slots_[_slot];
     const Slot& other = slots_[1 - _slot];
-    if (skeleton_path != skeleton_path_) {
-      if (other.loaded) {
-        status_ = "A and B must share a skeleton: " +
-                  _clip.filename().string() + " doesn't use " +
-                  skeleton_path_.string();
-        return;
-      }
-      skeleton_path_.clear();
-      if (!ozz::sample::LoadSkeleton(skeleton_path.string().c_str(), &skeleton_)) {
-        status_ = "Failed to load " + skeleton_path.string();
-        return;
-      }
-      skeleton_path_ = skeleton_path;
-      blended_.resize(skeleton_.num_soa_joints());
-      models_.resize(skeleton_.num_joints());
-      heading_axis_ = hyperpose::HeadingAxis(skeleton_);
-      character_.SetClipSkeleton(&skeleton_, skeleton_path_);
-    }
-
-    slot.loaded = false;
-    slot.path = _clip;
-    if (!ozz::sample::LoadAnimation(_clip.string().c_str(), &slot.animation) ||
-        slot.animation.num_tracks() != skeleton_.num_joints() ||
-        !hyperpose::ExtractPoseFeatures(slot.animation, skeleton_, kMatchRate,
-                                        &slot.features)) {
-      status_ = "Failed to load " + _clip.filename().string();
+    const auto use =
+        clip_skeleton_.Use(_clip, library_.root(), !other.clip.loaded());
+    if (use == hyperpose::ClipSkeleton::Result::kFailed) {
+      status_ = clip_skeleton_.error();
       return;
     }
-    slot.context.Resize(skeleton_.num_joints());
-    slot.locals.resize(skeleton_.num_soa_joints());
-    slot.loaded = true;
+    if (use == hyperpose::ClipSkeleton::Result::kChanged) {
+      blended_.resize(skeleton().num_soa_joints());
+      models_.resize(skeleton().num_joints());
+      character_.SetClipSkeleton(&skeleton(), clip_skeleton_.path());
+    }
+    if (!slot.clip.Load(_clip, skeleton()) ||
+        !hyperpose::ExtractPoseFeatures(slot.clip.animation(), skeleton(),
+                                        kMatchRate, &slot.features)) {
+      slot.clip.Unload();
+      status_ = "Failed to load " + _clip.filename().string();
+      ComputeDifference();
+      return;
+    }
     status_.clear();
     pick_ = 1 - _slot;  // Next click fills the other slot.
     ComputeDifference();
@@ -256,7 +239,7 @@ class PoseBlendApplication : public ozz::sample::Application {
     transition_ = hyperpose::Transition();
     difference_ = hyperpose::PoseDifference();
     map_colors_.clear();
-    if (!slots_[0].loaded || !slots_[1].loaded) {
+    if (!slots_[0].clip.loaded() || !slots_[1].clip.loaded()) {
       return;
     }
     const auto start = std::chrono::steady_clock::now();
@@ -280,7 +263,7 @@ class PoseBlendApplication : public ozz::sample::Application {
 
   int MinGap() const {
     // Same clip: skip trivial matches with nearby frames.
-    return slots_[0].path == slots_[1].path
+    return slots_[0].clip.path() == slots_[1].clip.path()
                ? std::max(blend_frames_ * 2, static_cast<int>(kMatchRate))
                : 0;
   }
@@ -340,16 +323,6 @@ class PoseBlendApplication : public ozz::sample::Application {
     set(soa.rotation.w, r.w);
   }
 
-  bool Sample(Slot& _slot, float _time) {
-    const float duration = _slot.animation.duration();
-    ozz::animation::SamplingJob job;
-    job.animation = &_slot.animation;
-    job.context = &_slot.context;
-    job.ratio = duration > 0.f ? std::clamp(_time / duration, 0.f, 1.f) : 0.f;
-    job.output = make_span(_slot.locals);
-    return job.Run();
-  }
-
   // Pose at sequence time _time: A, then crossfade, then B (aligned).
   bool Evaluate(float _time) {
     const float a_time = TransitionTimeA();
@@ -357,32 +330,34 @@ class PoseBlendApplication : public ozz::sample::Application {
     const float blend = (_time - a_time) / BlendDuration();
     weight_ = SmoothStep(blend);
 
+    hyperpose::ClipPlayer& a = slots_[0].clip;
+    hyperpose::ClipPlayer& b = slots_[1].clip;
     ozz::span<const math::SoaTransform> locals;
     if (blend <= 0.f) {
-      if (!Sample(slots_[0], _time)) return false;
-      locals = make_span(slots_[0].locals);
+      if (!a.SampleLocals(_time)) return false;
+      locals = a.locals();
     } else if (blend >= 1.f) {
-      if (!Sample(slots_[1], b_time)) return false;
-      AlignRoot(make_span(slots_[1].locals));
-      locals = make_span(slots_[1].locals);
+      if (!b.SampleLocals(b_time)) return false;
+      AlignRoot(b.locals());
+      locals = b.locals();
     } else {
-      if (!Sample(slots_[0], _time) || !Sample(slots_[1], b_time)) return false;
-      AlignRoot(make_span(slots_[1].locals));
+      if (!a.SampleLocals(_time) || !b.SampleLocals(b_time)) return false;
+      AlignRoot(b.locals());
       ozz::animation::BlendingJob::Layer layers[2];
       layers[0].weight = 1.f - weight_;
-      layers[0].transform = make_span(slots_[0].locals);
+      layers[0].transform = a.locals();
       layers[1].weight = weight_;
-      layers[1].transform = make_span(slots_[1].locals);
+      layers[1].transform = b.locals();
       ozz::animation::BlendingJob job;
       job.layers = layers;
-      job.rest_pose = skeleton_.joint_rest_poses();
+      job.rest_pose = skeleton().joint_rest_poses();
       job.output = make_span(blended_);
       if (!job.Run()) return false;
       locals = make_span(blended_);
     }
 
     ozz::animation::LocalToModelJob ltm;
-    ltm.skeleton = &skeleton_;
+    ltm.skeleton = &skeleton();
     ltm.input = locals;
     ltm.output = make_span(models_);
     return ltm.Run();
@@ -390,12 +365,12 @@ class PoseBlendApplication : public ozz::sample::Application {
 
   void SlotGui(int _slot, const char* _label) {
     const Slot& slot = slots_[_slot];
-    if (!slot.loaded) {
+    if (!slot.clip.loaded()) {
       ImGui::TextDisabled("%s: click a clip below", _label);
       return;
     }
-    const std::string name = slot.path.stem().string();
-    ImGui::Text("%s: %s (%.1fs)", _label, name.c_str(), slot.animation.duration());
+    const std::string name = slot.clip.path().stem().string();
+    ImGui::Text("%s: %s (%.1fs)", _label, name.c_str(), slot.clip.duration());
     const std::string& description = library_.Description(name);
     if (!description.empty()) {
       ImGui::SameLine();
@@ -549,9 +524,7 @@ class PoseBlendApplication : public ozz::sample::Application {
   bool draw_skeleton_ = false;
 
   // Shared clip skeleton and output pose.
-  fs::path skeleton_path_;
-  ozz::animation::Skeleton skeleton_;
-  int heading_axis_ = 0;
+  hyperpose::ClipSkeleton clip_skeleton_;
   ozz::vector<math::SoaTransform> blended_;
   ozz::vector<math::Float4x4> models_;
 
