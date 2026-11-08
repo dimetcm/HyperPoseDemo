@@ -129,6 +129,39 @@ ozz::vector<int> MapCanonical(const ozz::animation::Skeleton& _skeleton) {
   return map;
 }
 
+// Bones whose rest twist is also aligned, using the palm axis (index to pinky
+// knuckles) as second reference. Direction-only alignment leaves the palm
+// facing differently when rigs differ in rest twist.
+const char* kPalmBones[] = {"Hand",    "Index1", "Index2", "Middle1", "Middle2",
+                            "Ring1",   "Ring2",  "Pinky1", "Pinky2"};
+
+// Rotation taking the frame (_from_dir, _from_side) onto (_to_dir, _to_side):
+// directions match exactly, side axes as close as possible.
+bool FrameAlignment(const math::Float3& _from_dir, const math::Float3& _from_side,
+                    const math::Float3& _to_dir, const math::Float3& _to_side,
+                    math::Quaternion* _rotation) {
+  auto basis = [](const math::Float3& _dir, const math::Float3& _side,
+                  math::Float4x4* _m) {
+    const math::Float3 x = Normalize(_dir);
+    const math::Float3 z = Cross(x, _side);
+    if (LengthSqr(z) < 1e-8f) return false;
+    const math::Float3 zn = Normalize(z);
+    const math::Float3 y = Cross(zn, x);
+    _m->cols[0] = math::simd_float4::Load(x.x, x.y, x.z, 0.f);
+    _m->cols[1] = math::simd_float4::Load(y.x, y.y, y.z, 0.f);
+    _m->cols[2] = math::simd_float4::Load(zn.x, zn.y, zn.z, 0.f);
+    _m->cols[3] = math::simd_float4::w_axis();
+    return true;
+  };
+  math::Float4x4 from, to;
+  if (!basis(_from_dir, _from_side, &from) || !basis(_to_dir, _to_side, &to)) {
+    return false;
+  }
+  math::StorePtrU(math::ToQuaternion(to * Transpose(from)), &_rotation->x);
+  *_rotation = Normalize(*_rotation);
+  return true;
+}
+
 int FindCanonical(const std::string& _name) {
   const auto& bones = CanonicalBones();
   for (size_t b = 0; b < bones.size(); ++b) {
@@ -255,6 +288,30 @@ bool Retargeter::Setup(const ozz::animation::Skeleton& _source,
           target_positions[target_map[aim]] - target_positions[t];
       if (LengthSqr(source_dir) > 1e-8f && LengthSqr(target_dir) > 1e-8f) {
         rest_alignment = math::Quaternion::FromVectors(target_dir, source_dir);
+
+        // Palm bones also align twist, from the index to pinky knuckles axis.
+        const std::string& name = bones[b].name;
+        const std::string side = name.rfind("Left", 0) == 0    ? "Left"
+                                 : name.rfind("Right", 0) == 0 ? "Right"
+                                                               : "";
+        const std::string base = name.substr(side.size());
+        const int index = FindCanonical(side + "Index1");
+        const int pinky = FindCanonical(side + "Pinky1");
+        const bool palm =
+            !side.empty() &&
+            std::find(std::begin(kPalmBones), std::end(kPalmBones), base) !=
+                std::end(kPalmBones);
+        if (palm && index >= 0 && pinky >= 0 && source_map[index] >= 0 &&
+            source_map[pinky] >= 0 && target_map[index] >= 0 &&
+            target_map[pinky] >= 0) {
+          const math::Float3 source_side = TransformVector(
+              facing_, source_positions[source_map[pinky]] -
+                           source_positions[source_map[index]]);
+          const math::Float3 target_side = target_positions[target_map[pinky]] -
+                                           target_positions[target_map[index]];
+          FrameAlignment(target_dir, target_side, source_dir, source_side,
+                         &rest_alignment);
+        }
       }
     }
     joint.offset = Normalize(Conjugate(source_rotations[s]) * inv_facing *
