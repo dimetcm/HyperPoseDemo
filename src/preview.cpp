@@ -5,6 +5,8 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <unordered_map>
 #include <string>
 #include <vector>
 
@@ -30,16 +32,58 @@ namespace fs = std::filesystem;
 OZZ_OPTIONS_DECLARE_STRING(root, "Folder to browse for .ozz animations.",
                            HYPERPOSE_ASSETS_DIR "/ozz", false)
 OZZ_OPTIONS_DECLARE_STRING(clip, "Clip (.ozz) to load at startup.", "", false)
+OZZ_OPTIONS_DECLARE_STRING(
+    metadata, "CSV of clip descriptions (file_name,description).",
+    HYPERPOSE_ASSETS_DIR "/HuggingFace/gbionics__cmu-fbx/metadata.csv", false)
 
 namespace {
 
 constexpr const char* kSkeletonName = "skeleton.ozz";
 constexpr const char* kMeshName = "mesh.ozz";
 
+// Clip descriptions, by clip name (file name without extension).
+using Descriptions = std::unordered_map<std::string, std::string>;
+
+// Reads "file_name,description" rows (header skipped). Descriptions may be
+// quoted, with "" escaping quotes.
+Descriptions LoadDescriptions(const fs::path& _path) {
+  Descriptions descriptions;
+  std::ifstream file(_path);
+  std::string line;
+  std::getline(file, line);  // Header.
+  while (std::getline(file, line)) {
+    const size_t comma = line.find(',');
+    if (comma == std::string::npos) {
+      continue;
+    }
+    std::string description;
+    size_t i = comma + 1;
+    if (i < line.size() && line[i] == '"') {
+      for (++i; i < line.size(); ++i) {
+        if (line[i] == '"') {
+          if (i + 1 < line.size() && line[i + 1] == '"') {
+            description += '"';
+            ++i;
+          } else {
+            break;
+          }
+        } else {
+          description += line[i];
+        }
+      }
+    } else {
+      description = line.substr(i);
+    }
+    descriptions[fs::path(line.substr(0, comma)).stem().string()] = description;
+  }
+  return descriptions;
+}
+
 struct Clip {
   fs::path path;
   std::string name;  // File name without extension.
   float duration;
+  std::string description;
 };
 
 struct Folder {
@@ -51,7 +95,8 @@ struct Folder {
 
 // Recursively collects animation clips, skipping other archives (skeletons,
 // meshes), hidden entries and folders without clips.
-bool ScanFolder(const fs::path& _path, Folder* _folder) {
+bool ScanFolder(const fs::path& _path, const Descriptions& _descriptions,
+                Folder* _folder) {
   _folder->name = _path.filename().string();
   std::error_code ec;
   for (const auto& entry : fs::directory_iterator(_path, ec)) {
@@ -61,14 +106,17 @@ bool ScanFolder(const fs::path& _path, Folder* _folder) {
     }
     if (entry.is_directory()) {
       Folder child;
-      if (ScanFolder(entry.path(), &child)) {
+      if (ScanFolder(entry.path(), _descriptions, &child)) {
         _folder->folders.push_back(std::move(child));
       }
     } else if (entry.path().extension() == ".ozz") {
       float duration;
       if (hyperpose::ReadClipDuration(entry.path().string().c_str(), &duration)) {
+        const std::string stem = entry.path().stem().string();
+        const auto description = _descriptions.find(stem);
         _folder->clips.push_back(
-            {entry.path(), entry.path().stem().string(), duration});
+            {entry.path(), stem, duration,
+             description != _descriptions.end() ? description->second : ""});
       }
     }
   }
@@ -135,7 +183,8 @@ class PreviewApplication : public ozz::sample::Application {
  protected:
   bool OnInitialize() override {
     root_path_ = fs::path(OPTIONS_root.value());
-    if (!ScanFolder(root_path_, &root_)) {
+    descriptions_ = LoadDescriptions(OPTIONS_metadata.value());
+    if (!ScanFolder(root_path_, descriptions_, &root_)) {
       status_ = "No .ozz clips found in " + root_path_.string();
     }
     ScanCharacters(root_path_, &characters_);
@@ -223,7 +272,7 @@ class PreviewApplication : public ozz::sample::Application {
     const float dpi = ImGui::GetStyle().FontScaleDpi;
     const float min_width = 150.f * dpi;
     ImGui::SetNextWindowPos(ImVec2(0.f, 0.f));
-    ImGui::SetNextWindowSize(ImVec2(220.f * dpi, io.DisplaySize.y),
+    ImGui::SetNextWindowSize(ImVec2(400.f * dpi, io.DisplaySize.y),
                              ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(
         ImVec2(min_width, io.DisplaySize.y),
@@ -271,11 +320,13 @@ class PreviewApplication : public ozz::sample::Application {
     const ImGuiTableFlags table_flags =
         ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg |
         ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable;
-    if (ImGui::BeginTable("clips", 2, table_flags)) {
+    if (ImGui::BeginTable("clips", 3, table_flags)) {
       ImGui::TableSetupScrollFreeze(0, 1);
-      ImGui::TableSetupColumn("Clip", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableSetupColumn("Clip", ImGuiTableColumnFlags_WidthStretch, 1.f);
       ImGui::TableSetupColumn("Duration", ImGuiTableColumnFlags_WidthFixed,
                               ImGui::CalcTextSize("Duration").x);
+      ImGui::TableSetupColumn("Description", ImGuiTableColumnFlags_WidthStretch,
+                              1.6f);
       ImGui::TableHeadersRow();
       DrawFolder(root_, root_path_, true);
       ImGui::EndTable();
@@ -448,9 +499,15 @@ class PreviewApplication : public ozz::sample::Application {
     character_status_ = info;
   }
 
+  // Filter matches clip names and descriptions.
+  bool Matches(const Clip& _clip) const {
+    return filter_.PassFilter(_clip.name.c_str()) ||
+           filter_.PassFilter(_clip.description.c_str());
+  }
+
   bool HasMatch(const Folder& _folder) const {
     for (const auto& clip : _folder.clips) {
-      if (filter_.PassFilter(clip.name.c_str())) {
+      if (Matches(clip)) {
         return true;
       }
     }
@@ -489,7 +546,7 @@ class PreviewApplication : public ozz::sample::Application {
     // Clips, clipped to the visible range as folders can hold thousands.
     visible_.clear();
     for (const auto& clip : _folder.clips) {
-      if (!filtering || filter_.PassFilter(clip.name.c_str())) {
+      if (!filtering || Matches(clip)) {
         visible_.push_back(&clip);
       }
     }
@@ -512,6 +569,11 @@ class PreviewApplication : public ozz::sample::Application {
         }
         ImGui::TableNextColumn();
         ImGui::Text("%.1fs", clip.duration);
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(clip.description.c_str());
+        if (!clip.description.empty()) {
+          ImGui::SetItemTooltip("%s", clip.description.c_str());
+        }
       }
     }
     ImGui::TreePop();
@@ -593,10 +655,15 @@ class PreviewApplication : public ozz::sample::Application {
                   _clip.stem().string().c_str(), animation_.duration(),
                   skeleton_.num_joints());
     status_ = info;
+    const auto description = descriptions_.find(_clip.stem().string());
+    if (description != descriptions_.end() && !description->second.empty()) {
+      status_ += "\n" + description->second;
+    }
   }
 
   // Browser state.
   fs::path root_path_;
+  Descriptions descriptions_;
   Folder root_;
   ImGuiTextFilter filter_;
   std::vector<const Clip*> visible_;
@@ -632,8 +699,8 @@ class PreviewApplication : public ozz::sample::Application {
     bool enabled = false;
     int method = 0;   // kMethods index.
     int sampler = 1;  // kSamplers index.
-    int count = 150;
-    int pending_count = 150;  // Slider value, applied on release.
+    int count = 500;
+    int pending_count = 500;  // Slider value, applied on release.
     int seed = 1;
     float point_size = 3.f;
     bool color_by_id = true;
