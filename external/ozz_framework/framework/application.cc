@@ -404,6 +404,17 @@ bool Application::Display() {
     GL(DepthMask(GL_TRUE));
     GL(DepthFunc(GL_LEQUAL));
 
+    // [HyperPoseDemo change] The 3D view uses the area right of the app's left
+    // panel (gui_left_inset_), so the camera frames the scene in visible space.
+    const int inset =
+        window_size_.width > 0
+            ? static_cast<int>(gui_left_inset_ * framebuffer_size_.width /
+                               window_size_.width)
+            : 0;
+    const int view_width = std::max(1, framebuffer_size_.width - inset);
+    GL(Viewport(inset, 0, view_width, framebuffer_size_.height));
+    camera_->Resize(view_width, framebuffer_size_.height, content_scale_);
+
     // Bind 3D camera matrices.
     camera_->Bind3D();
 
@@ -420,6 +431,11 @@ bool Application::Display() {
   if (show_axes_) {
     renderer_->DrawAxes(ozz::math::Float4x4::identity());
   }
+
+  // [HyperPoseDemo change] Back to the full window for the GUI.
+  GL(Viewport(0, 0, framebuffer_size_.width, framebuffer_size_.height));
+  camera_->Resize(framebuffer_size_.width, framebuffer_size_.height,
+                  content_scale_);
 
   // Bind 2D camera matrices.
   camera_->Bind2D();

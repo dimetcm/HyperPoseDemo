@@ -41,7 +41,13 @@ add_library(hyperpose_common STATIC
   src/common/retarget.h
   src/common/retarget.cpp
   src/common/point_field.h
-  src/common/point_field.cpp)
+  src/common/point_field.cpp
+  src/common/pose_match.h
+  src/common/pose_match.cpp
+  src/common/clip_library.h
+  src/common/clip_library.cpp
+  src/common/character_view.h
+  src/common/character_view.cpp)
 target_include_directories(hyperpose_common PUBLIC src)
 target_link_libraries(hyperpose_common PUBLIC sample_framework)
 
@@ -53,6 +59,11 @@ set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT HyperPoseDemo)
 add_executable(AnimPreview src/preview.cpp)
 target_link_libraries(AnimPreview PRIVATE hyperpose_common)
 target_compile_definitions(AnimPreview PRIVATE HYPERPOSE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/Assets")
+
+# Minimal Pose Difference Blend: best transition between two clips.
+add_executable(PoseBlend src/pose_blend.cpp)
+target_link_libraries(PoseBlend PRIVATE hyperpose_common)
+target_compile_definitions(PoseBlend PRIVATE HYPERPOSE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/Assets")
 
 # Asset pipeline: rescales/builds raw archives from fbx2ozz (see Tools/convert_fbx.py).
 add_executable(ozz_fixup Tools/ozz_fixup/main.cpp)
