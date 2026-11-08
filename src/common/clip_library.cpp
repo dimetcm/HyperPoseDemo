@@ -1,6 +1,7 @@
 #include "common/clip_library.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <fstream>
 
 #include "common/anim_utils.h"
@@ -117,24 +118,56 @@ void ClipLibrary::DrawFilter() {
   }
 }
 
+void ClipLibrary::SetFilter(const char* _text) {
+  std::snprintf(filter_.InputBuf, IM_ARRAYSIZE(filter_.InputBuf), "%s", _text);
+  filter_.Build();
+}
+
 bool ClipLibrary::DrawTable(const std::vector<fs::path>& _highlighted,
-                            fs::path* _clicked) {
+                            fs::path* _clicked,
+                            const std::vector<fs::path>* _checked,
+                            fs::path* _toggled) {
   _clicked->clear();
+  if (_toggled) {
+    _toggled->clear();
+  }
   const ImGuiTableFlags table_flags =
       ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg |
       ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable;
-  if (ImGui::BeginTable("clips", 3, table_flags)) {
+  if (ImGui::BeginTable("clips", _checked ? 4 : 3, table_flags)) {
     ImGui::TableSetupScrollFreeze(0, 1);
+    if (_checked) {
+      ImGui::TableSetupColumn("Set", ImGuiTableColumnFlags_WidthFixed,
+                              ImGui::CalcTextSize("Set").x);
+    }
     ImGui::TableSetupColumn("Clip", ImGuiTableColumnFlags_WidthStretch, 1.f);
     ImGui::TableSetupColumn("Duration", ImGuiTableColumnFlags_WidthFixed,
                             ImGui::CalcTextSize("Duration").x);
     ImGui::TableSetupColumn("Description", ImGuiTableColumnFlags_WidthStretch,
                             3.f);
     ImGui::TableHeadersRow();
-    DrawFolder(tree_, root_, true, _highlighted, _clicked);
+    DrawFolder(tree_, root_, true, _highlighted, _clicked, _checked, _toggled);
     ImGui::EndTable();
   }
   return !_clicked->empty();
+}
+
+std::vector<fs::path> ClipLibrary::FilteredClips() const {
+  std::vector<fs::path> clips;
+  CollectFiltered(tree_, &clips);
+  return clips;
+}
+
+void ClipLibrary::CollectFiltered(const Folder& _folder,
+                                  std::vector<fs::path>* _clips) const {
+  for (const auto& folder : _folder.folders) {
+    CollectFiltered(folder, _clips);
+  }
+  for (const auto& clip : _folder.clips) {
+    if (!filter_.IsActive() || Matches(clip)) {
+      _clips->push_back(clip.path);
+    }
+  }
 }
 
 bool ClipLibrary::Matches(const Clip& _clip) const {
@@ -159,7 +192,10 @@ bool ClipLibrary::HasMatch(const Folder& _folder) const {
 void ClipLibrary::DrawFolder(const Folder& _folder, const fs::path& _path,
                              bool _is_root,
                              const std::vector<fs::path>& _highlighted,
-                             fs::path* _clicked) {
+                             fs::path* _clicked,
+                             const std::vector<fs::path>* _checked,
+                             fs::path* _toggled) {
+  const int first = _checked ? 1 : 0;  // Name column index.
   const bool filtering = filter_.IsActive();
   if (filtering && !HasMatch(_folder)) {
     return;
@@ -171,7 +207,12 @@ void ClipLibrary::DrawFolder(const Folder& _folder, const fs::path& _path,
       ImGuiTreeNodeFlags_SpanAllColumns |
       (_is_root ? ImGuiTreeNodeFlags_DefaultOpen : 0);
   ImGui::TableNextRow();
-  ImGui::TableNextColumn();
+  if (_checked && _is_root) {
+    // Not indented yet: remembers where the checkbox column starts.
+    ImGui::TableSetColumnIndex(0);
+    check_column_x_ = ImGui::GetCursorScreenPos().x;
+  }
+  ImGui::TableSetColumnIndex(first);
   const bool open = ImGui::TreeNodeEx(_path.string().c_str(), folder_flags, "%s",
                                       _folder.name.c_str());
   ImGui::TableNextColumn();
@@ -180,7 +221,8 @@ void ClipLibrary::DrawFolder(const Folder& _folder, const fs::path& _path,
     return;
   }
   for (const auto& folder : _folder.folders) {
-    DrawFolder(folder, _path / folder.name, false, _highlighted, _clicked);
+    DrawFolder(folder, _path / folder.name, false, _highlighted, _clicked,
+               _checked, _toggled);
   }
 
   // Clips, clipped to the visible range as folders can hold thousands.
@@ -201,9 +243,10 @@ void ClipLibrary::DrawFolder(const Folder& _folder, const fs::path& _path,
       const ImGuiTreeNodeFlags flags =
           ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen |
           ImGuiTreeNodeFlags_SpanAllColumns |
+          (_checked ? ImGuiTreeNodeFlags_AllowOverlap : 0) |
           (selected ? ImGuiTreeNodeFlags_Selected : 0);
       ImGui::TableNextRow();
-      ImGui::TableNextColumn();
+      ImGui::TableSetColumnIndex(first);
       ImGui::TreeNodeEx(clip.path.string().c_str(), flags, "%s",
                         clip.name.c_str());
       if (ImGui::IsItemClicked()) {
@@ -215,6 +258,24 @@ void ClipLibrary::DrawFolder(const Folder& _folder, const fs::path& _path,
       ImGui::TextUnformatted(clip.description.c_str());
       if (!clip.description.empty()) {
         ImGui::SetItemTooltip("%s", clip.description.c_str());
+      }
+      // Checkbox last, so it takes the click over the row spanning node.
+      if (_checked) {
+        // Tree indentation applies to every column: draw at the column start.
+        ImGui::TableSetColumnIndex(0);
+        ImGui::SetCursorScreenPos(
+            ImVec2(check_column_x_, ImGui::GetCursorScreenPos().y));
+        bool checked = std::find(_checked->begin(), _checked->end(),
+                                 clip.path) != _checked->end();
+        ImGui::PushID(clip.path.string().c_str());
+        // No vertical padding: keeps the row at text height.
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                            ImVec2(ImGui::GetStyle().FramePadding.x, 0.f));
+        if (ImGui::Checkbox("##set", &checked) && _toggled) {
+          *_toggled = clip.path;
+        }
+        ImGui::PopStyleVar();
+        ImGui::PopID();
       }
     }
   }

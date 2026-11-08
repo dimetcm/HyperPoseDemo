@@ -9,6 +9,7 @@
 #include "common/clip_library.h"
 #include "framework/renderer.h"
 #include "framework/utils.h"
+#include "ozz/geometry/runtime/skinning_job.h"
 
 namespace fs = std::filesystem;
 
@@ -123,6 +124,66 @@ bool CharacterView::Draw(ozz::sample::Renderer* _renderer,
     ComputeSkinningMatrices(mesh, make_span(models_), make_span(skinning_matrices_));
     success &= _renderer->DrawSkinnedMesh(mesh, make_span(skinning_matrices_),
                                           _transform);
+  }
+  return success;
+}
+
+bool CharacterView::Bake(ozz::vector<ozz::sample::Mesh>* _baked) {
+  _baked->clear();
+  if (!posed()) {
+    return false;
+  }
+  for (const ozz::sample::Mesh& mesh : meshes_) {
+    ComputeSkinningMatrices(mesh, make_span(models_), make_span(skinning_matrices_));
+    ozz::sample::Mesh baked;
+    baked.triangle_indices = mesh.triangle_indices;
+    for (const ozz::sample::Mesh::Part& part : mesh.parts) {
+      ozz::sample::Mesh::Part out;
+      out.uvs = part.uvs;
+      out.colors = part.colors;
+      out.positions.resize(part.positions.size());
+      out.normals.resize(part.normals.size());  // Tangents: unused by DrawMesh.
+      const int vertex_count = part.vertex_count();
+      if (vertex_count > 0) {
+        const int influences = part.influences_count();
+        ozz::geometry::SkinningJob job;
+        job.vertex_count = vertex_count;
+        job.influences_count = influences;
+        job.joint_matrices = make_span(skinning_matrices_);
+        job.joint_indices = make_span(part.joint_indices);
+        job.joint_indices_stride = sizeof(uint16_t) * influences;
+        if (influences > 1) {
+          job.joint_weights = make_span(part.joint_weights);
+          job.joint_weights_stride = sizeof(float) * (influences - 1);
+        }
+        job.in_positions = make_span(part.positions);
+        job.in_positions_stride = sizeof(float) * 3;
+        job.out_positions = make_span(out.positions);
+        job.out_positions_stride = sizeof(float) * 3;
+        if (part.normals.size() == part.positions.size()) {
+          job.in_normals = make_span(part.normals);
+          job.in_normals_stride = sizeof(float) * 3;
+          job.out_normals = make_span(out.normals);
+          job.out_normals_stride = sizeof(float) * 3;
+        }
+        if (!job.Run()) {
+          _baked->clear();
+          return false;
+        }
+      }
+      baked.parts.push_back(std::move(out));
+    }
+    _baked->push_back(std::move(baked));
+  }
+  return true;
+}
+
+bool CharacterView::DrawBaked(ozz::sample::Renderer* _renderer,
+                              const ozz::vector<ozz::sample::Mesh>& _baked,
+                              const ozz::math::Float4x4& _transform) {
+  bool success = true;
+  for (const ozz::sample::Mesh& mesh : _baked) {
+    success &= _renderer->DrawMesh(mesh, _transform);
   }
   return success;
 }

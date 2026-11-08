@@ -41,6 +41,13 @@ class CharacterView {
   bool Draw(ozz::sample::Renderer* _renderer,
             const ozz::math::Float4x4& _transform);
 
+  // Skins the meshes in the last updated pose once, into static meshes (no
+  // skinning data) that DrawBaked renders without per frame skinning.
+  bool Bake(ozz::vector<ozz::sample::Mesh>* _baked);
+  static bool DrawBaked(ozz::sample::Renderer* _renderer,
+                        const ozz::vector<ozz::sample::Mesh>& _baked,
+                        const ozz::math::Float4x4& _transform);
+
   // Character selection combo and status. Returns true on selection change.
   bool DrawGui();
 
