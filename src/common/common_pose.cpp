@@ -63,9 +63,16 @@ void CountTransitions(const std::vector<Sample>& _samples,
       }
       runs.push_back(all[r]);
     }
+    // A run lasts until the next one starts, the last one one sample past
+    // the clip's last sample.
+    auto run_end = [&](size_t _r) {
+      return _r + 1 < runs.size() ? _samples[runs[_r + 1].first].time
+                                  : _samples[end - 1].time + 1.f / _rate;
+    };
     for (size_t r = 1; r < runs.size(); ++r) {
       const Sample& sample = _samples[runs[r].first];
-      found[runs[r - 1].pose][runs[r].pose].push_back({sample.clip, sample.time});
+      found[runs[r - 1].pose][runs[r].pose].push_back(
+          {sample.clip, sample.time, _samples[runs[r - 1].first].time, run_end(r)});
     }
     begin = end;
   }

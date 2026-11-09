@@ -54,6 +54,8 @@ add_library(hyperpose_common STATIC
   src/common/common_pose.cpp
   src/common/pose_gallery.h
   src/common/pose_gallery.cpp
+  src/common/pose_walk.h
+  src/common/pose_walk.cpp
   src/common/character_view.h
   src/common/character_view.cpp)
 target_include_directories(hyperpose_common PUBLIC src)

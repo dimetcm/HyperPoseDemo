@@ -41,7 +41,9 @@ struct CommonPose {
     int to;  // Index in CommonPoseResult::poses.
     struct Example {
       int clip;
-      float time;  // First frame in the next pose (s).
+      float time;   // First frame in the next pose (s).
+      float begin;  // When the clip entered this pose (s).
+      float end;    // When the clip left the next pose (s).
     };
     std::vector<Example> examples;
   };

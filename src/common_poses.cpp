@@ -19,6 +19,7 @@
 #include "common/clip_player.h"
 #include "common/common_pose.h"
 #include "common/pose_gallery.h"
+#include "common/pose_walk.h"
 #include "common/pose_match.h"
 #include "framework/application.h"
 #include "framework/imgui.h"
@@ -45,6 +46,8 @@ OZZ_OPTIONS_DECLARE_STRING(
     "", false)
 OZZ_OPTIONS_DECLARE_STRING(clip, "Clip to preview at startup (path).", "",
                            false)
+OZZ_OPTIONS_DECLARE_BOOL(walk, "Starts the pose walk once common poses are found.",
+                         false, false)
 
 namespace {
 
@@ -74,6 +77,7 @@ class CommonPosesApplication : public ozz::sample::Application {
       }
       StartClustering();
     }
+    walk_on_result_ = OPTIONS_walk;
     if (OPTIONS_clip.value()[0]) {
       StartPreview(OPTIONS_clip.value(), 0.f);
     }
@@ -84,6 +88,7 @@ class CommonPosesApplication : public ozz::sample::Application {
     // Picks up the clustering result when the worker is done.
     if (job_.valid() &&
         job_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+      walk_.Stop();  // Walks the previous result.
       result_ = job_.get();
       status_ = result_.error;
       LogResult();
@@ -91,9 +96,16 @@ class CommonPosesApplication : public ozz::sample::Application {
         status_ = gallery_.error();
       }
       SelectPose(result_.poses.empty() ? -1 : 0);
+      if (walk_on_result_ && !result_.poses.empty()) {
+        StartWalk();  // First result only.
+        walk_on_result_ = false;
+      }
     }
     if (previewing_) {
       UpdatePreview(_dt);
+    }
+    if (walk_.active()) {
+      UpdateWalk(_dt);
     }
     if (show_gallery_) {
       gallery_.Update(_dt, &character_);
@@ -108,8 +120,16 @@ class CommonPosesApplication : public ozz::sample::Application {
     labels_.clear();
     if (pose_valid_) {
       success &= DrawPose(_renderer, make_span(models_), math::Float4x4::identity());
-      AddLabel(math::Float4x4::identity(), make_span(models_), "", clip_.path(),
-               clip_.time, clip_.duration());
+      if (walk_.active()) {
+        const hyperpose::PoseWalk::Segment& segment = walk_.segment();
+        AddLabel(math::Float4x4::identity(), make_span(models_),
+                 "#" + std::to_string(segment.from + 1) + (segment.jump ? " jump #" : " -> #") +
+                     std::to_string(segment.to + 1) + "\n",
+                 result_.clips[segment.clip], walk_.clip_time(), walk_.clip_duration());
+      } else {
+        AddLabel(math::Float4x4::identity(), make_span(models_), "", clip_.path(),
+                 clip_.time, clip_.duration());
+      }
     }
     // Every common pose, in rows behind the displayed pose.
     if (show_gallery_ && !gallery_.empty()) {
@@ -376,6 +396,7 @@ class CommonPosesApplication : public ozz::sample::Application {
     }
     if (use == hyperpose::ClipSkeleton::Result::kChanged) {
       // Everything loaded for the previous skeleton is stale.
+      walk_.Stop();
       models_.resize(skeleton().num_joints());
       character_.SetClipSkeleton(&skeleton(), clip_skeleton_.path());
       result_ = hyperpose::CommonPoseResult();
@@ -543,6 +564,7 @@ class CommonPosesApplication : public ozz::sample::Application {
                   frame.distance * 100.f, library_.Description(name).c_str());
       TransitionsGui();
     }
+    WalkGui();
     if (ImGui::Checkbox("Align pose to origin", &align_to_origin_)) {
       RefreshPose();
     }
@@ -845,6 +867,7 @@ class CommonPosesApplication : public ozz::sample::Application {
   // Shows a frame of the selected pose, still.
   void ShowFrame(int _frame) {
     previewing_ = false;
+    walk_.Stop();
     const CommonPose::Frame& frame = result_.poses[pose_].frames[_frame];
     SampleClip(result_.clips[frame.clip], frame.time);
   }
@@ -855,8 +878,12 @@ class CommonPosesApplication : public ozz::sample::Application {
   // Clip being previewed (empty when showing a still frame).
   fs::path PreviewedClip() const { return previewing_ ? clip_.path() : fs::path(); }
 
-  // Re-samples the displayed pose (preview or selected frame).
+  // Re-samples the displayed pose (preview or selected frame). The walk
+  // samples every update.
   void RefreshPose() {
+    if (walk_.active()) {
+      return;
+    }
     if (previewing_) {
       SampleClip(clip_.path(), clip_.time);
     } else if (pose_ >= 0) {
@@ -870,8 +897,84 @@ class CommonPosesApplication : public ozz::sample::Application {
       return;
     }
     status_.clear();
+    walk_.Stop();
     previewing_ = SampleClip(_clip, _time);
     clip_.playing = true;
+  }
+
+  // Pose walk: the main character walks the transition graph from the
+  // selected pose (random if none), instead of the preview / still frame.
+  void StartWalk() {
+    previewing_ = false;
+    if (!walk_.Start(&result_, &skeleton(), clip_skeleton_.heading_axis(), pose_)) {
+      status_ = "Pose walk failed to start.";
+      return;
+    }
+    UpdateWalk(0.f);
+  }
+
+  void StopWalk() {
+    walk_.Stop();
+    pose_valid_ = false;
+    RefreshPose();  // Still frame of the selected pose.
+  }
+
+  void UpdateWalk(float _dt) {
+    pose_valid_ = walk_.Update(_dt, make_span(models_));
+    if (!walk_.active()) {
+      status_ = "Pose walk failed to load a clip.";
+      return;
+    }
+    // Selects the pose the character is in (shown in the transition graph):
+    // the source pose until the clip reaches the next one.
+    const hyperpose::PoseWalk::Segment& segment = walk_.segment();
+    const int pose = walk_.clip_time() < segment.time ? segment.from : segment.to;
+    if (pose != pose_) {
+      pose_ = pose;
+      frame_ = 0;
+      transition_example_.clear();
+    }
+  }
+
+  void WalkGui() {
+    if (!ImGui::TreeNodeEx("Pose walk", ImGuiTreeNodeFlags_DefaultOpen)) {
+      return;
+    }
+    if (walk_.active()) {
+      if (ImGui::Button("Stop walk", ImVec2(ImGui::GetFontSize() * 6.f, 0.f))) {
+        StopWalk();
+      }
+    } else if (ImGui::Button("Walk", ImVec2(ImGui::GetFontSize() * 6.f, 0.f))) {
+      StartWalk();
+    }
+    ImGui::SetItemTooltip(
+        "The main character walks the transition graph: from its pose, picks\n"
+        "the next one weighted by how often the clips go there, plays an\n"
+        "example of that transition, crossfades into the next, and so on.\n"
+        "Starts from the selected pose.");
+    if (walk_.active()) {
+      const hyperpose::PoseWalk::Segment& segment = walk_.segment();
+      ImGui::SameLine();
+      ImGui::Text("#%d %s #%d  %s @ %.1fs", segment.from + 1,
+                  segment.jump ? "jump" : "->", segment.to + 1,
+                  result_.clips[segment.clip].stem().string().c_str(), walk_.clip_time());
+      if (segment.jump) {
+        ImGui::SetItemTooltip("No transition out of #%d (its clips end there):\n"
+                              "jumped to a random pose.", segment.from + 1);
+      }
+    }
+    const float width = ImGui::GetContentRegionAvail().x / 2.f - ImGui::GetStyle().ItemSpacing.x;
+    ImGui::SetNextItemWidth(width);
+    ImGui::SliderFloat("##max_stay", &walk_.max_stay, .1f, 20.f, "max stay %.1fs",
+                       ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip(
+        "Each pose plays as long as the example clip stayed in it, from when\n"
+        "the clip entered it to when it reaches the next pose, up to this.");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::SliderFloat("##blend", &walk_.blend, 0.f, 1.f, "blend %.2fs");
+    ImGui::SetItemTooltip("Crossfade from one transition example to the next.");
+    ImGui::TreePop();
   }
 
   void UpdatePreview(float _dt) {
@@ -952,6 +1055,8 @@ class CommonPosesApplication : public ozz::sample::Application {
 
   // Every common pose, behind the displayed pose.
   hyperpose::PoseGallery gallery_;
+  hyperpose::PoseWalk walk_;  // Main character pose walk, when active.
+  bool walk_on_result_ = false;  // --walk: starts on the first result.
   bool show_gallery_ = true;
 
   // Displayed pose: a clip preview (playing), or a still frame of the
