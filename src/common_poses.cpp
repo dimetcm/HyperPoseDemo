@@ -149,7 +149,7 @@ class CommonPosesApplication : public ozz::sample::Application {
       if (walk_.active()) {
         const hyperpose::PoseWalk::Segment& segment = walk_.segment();
         AddLabel(math::Float4x4::identity(), make_span(models_),
-                 (segment.jump ? "jump #" : "#") + std::to_string(segment.from + 1) +
+                 SegmentPrefix(segment) + ("#" + std::to_string(segment.from + 1)) +
                      " -> " + PoseName(segment.to) + "\n",
                  result_.clips[segment.clip], walk_.clip_time(), walk_.clip_duration());
       } else {
@@ -371,6 +371,11 @@ class CommonPosesApplication : public ozz::sample::Application {
     clustered_project_ = CurrentProject();
     job_ = std::async(std::launch::async, hyperpose::FindCommonPoses, set_, &skeleton(),
                       kRates[rate_], k_, static_cast<uint32_t>(seed_));
+  }
+
+  // How a walk segment was reached, other than by a transition.
+  static const char* SegmentPrefix(const hyperpose::PoseWalk::Segment& _segment) {
+    return _segment.jump ? "jump " : _segment.after_end ? "after end " : "";
   }
 
   // "#3", or "end" for -1 (a clip end).
@@ -1270,12 +1275,15 @@ class CommonPosesApplication : public ozz::sample::Application {
     if (walk_.active()) {
       const hyperpose::PoseWalk::Segment& segment = walk_.segment();
       ImGui::SameLine();
-      ImGui::Text("%s#%d -> %s  %s @ %.1fs", segment.jump ? "jump " : "",
-                  segment.from + 1, PoseName(segment.to).c_str(),
+      ImGui::Text("%s#%d -> %s  %s @ %.1fs", SegmentPrefix(segment), segment.from + 1,
+                  PoseName(segment.to).c_str(),
                   result_.clips[segment.clip].stem().string().c_str(), walk_.clip_time());
       if (segment.jump) {
-        ImGui::SetItemTooltip("The previous clip ended: jumped to #%d, a pose the clips "
-                              "start in.", segment.from + 1);
+        ImGui::SetItemTooltip("Nowhere to go from the last pose: jumped to #%d, a pose "
+                              "the clips start in.", segment.from + 1);
+      } else if (segment.after_end) {
+        ImGui::SetItemTooltip("The previous clip ended in #%d: goes on from it with "
+                              "another clip.", segment.from + 1);
       }
     }
     const float width = ImGui::GetContentRegionAvail().x / 2.f - ImGui::GetStyle().ItemSpacing.x;

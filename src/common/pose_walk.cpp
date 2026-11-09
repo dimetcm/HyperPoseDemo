@@ -69,7 +69,7 @@ bool PoseWalk::Start(const CommonPoseResult* _result,
     }
     _pose = std::discrete_distribution<int>(weights.begin(), weights.end())(rng_);
   }
-  if (!Next(_pose)) {
+  if (!Next(_pose, false)) {
     Stop();
     return false;
   }
@@ -84,14 +84,22 @@ void PoseWalk::Stop() {
   pool_.clear();
 }
 
-bool PoseWalk::Next(int _from) {
+bool PoseWalk::Next(int _from, bool _after_end) {
   Segment segment;
-  if (_from < 0 || result_->exits[_from].edges.empty()) {
-    // The clip ended: jumps to a pose the clips start in, weighted by how
-    // many do.
+  segment.after_end = _after_end;
+  // Right after a clip end, only transitions to a pose, so the walk goes on
+  // instead of ending again.
+  auto usable = [&](const PoseEdge& _edge) { return !_after_end || _edge.to >= 0; };
+  auto leads_on = [&](int _pose) {
+    const auto& edges = result_->exits[_pose].edges;
+    return std::any_of(edges.begin(), edges.end(), usable);
+  };
+  if (!leads_on(_from)) {
+    // Nowhere to go from this pose: jumps to a pose the clips start in,
+    // weighted by how many do.
     std::vector<double> weights(result_->poses.size(), 0.);
     for (const PoseTransition& transition : result_->transitions) {
-      if (transition.from < 0 && !result_->exits[transition.to].edges.empty()) {
+      if (transition.from < 0 && leads_on(transition.to)) {
         weights[transition.to] += 1.;
       }
     }
@@ -106,7 +114,7 @@ bool PoseWalk::Next(int _from) {
   const PoseExits& exits = result_->exits[_from];
   std::vector<double> weights;
   for (const PoseEdge& edge : exits.edges) {
-    weights.push_back(static_cast<double>(edge.transitions.size()));
+    weights.push_back(usable(edge) ? static_cast<double>(edge.transitions.size()) : 0.);
   }
   const PoseEdge& edge =
       exits.edges[std::discrete_distribution<int>(weights.begin(), weights.end())(rng_)];
@@ -210,7 +218,10 @@ bool PoseWalk::Update(float _dt, ozz::span<math::Float4x4> _models) {
   }
   Track* current = tracks_.back().get();
   if (current->clip.time >= segment_.time || !current->clip.playing) {
-    if (!Next(segment_.to)) {
+    // After a clip end, goes on from the pose it ended in, with another
+    // clip that leaves that pose.
+    const bool ended = segment_.to < 0;
+    if (!Next(ended ? segment_.from : segment_.to, ended)) {
       Stop();
       return false;
     }

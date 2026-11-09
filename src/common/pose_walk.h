@@ -3,7 +3,7 @@
 // Random walk over the common pose transition graph: from the current pose,
 // picks the next one (or the clip end) weighted by how often the clips go
 // there, plays one of those transitions (a clip segment), then picks again
-// from the reached pose, or from a pose the clips start in after a clip end.
+// from the reached pose (the same one after a clip end).
 // Segments are crossfaded, with every clip's root aligned to the origin, so
 // the character stays in place (see root_motion).
 
@@ -55,12 +55,15 @@ class PoseWalk {
   // entered `from` (start, at most max_stay before) until it reaches `to`
   // (time). The next segment starts where its clip entered `to`,
   // crossfading from this clip, which plays on into `to`. A transition to
-  // -1 plays until the clip ends; the next segment then jumps: its `from` is
-  // a pose the clips start in.
+  // -1 plays until the clip ends; the next segment then goes on from the
+  // same pose (after_end), with a transition of another clip out of it. A
+  // pose with nowhere to go jumps instead: `from` becomes a pose the clips
+  // start in.
   struct Segment {
     int transition = -1;  // Index in CommonPoseResult::transitions.
     int from = -1;
     int to = -1;
+    bool after_end = false;
     bool jump = false;
     int clip = -1;  // Index in CommonPoseResult::clips.
     float start = 0.f;
@@ -87,7 +90,9 @@ class PoseWalk {
     ozz::vector<ozz::math::SoaTransform> locals;
   };
 
-  bool Next(int _from);
+  // Picks and starts the segment out of _from; _after_end: right after a
+  // clip end, so not to a clip end again.
+  bool Next(int _from, bool _after_end);
   // Samples the track's clip at its time into its locals, with the root
   // aligned to the origin, or placed by its offset with root motion.
   bool SampleRoot(Track* _track);
