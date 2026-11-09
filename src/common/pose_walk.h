@@ -1,10 +1,11 @@
 #pragma once
 
 // Random walk over the common pose transition graph: from the current pose,
-// picks the next one weighted by how often the clips go there, plays a real
-// example of that transition (a clip segment), then picks again from the
-// reached pose. Segments are crossfaded, with every clip's root aligned to
-// the origin, so the character stays in place.
+// picks the next one (or the clip end) weighted by how often the clips go
+// there, plays one of those transitions (a clip segment), then picks again
+// from the reached pose, or from a pose the clips start in after a clip end.
+// Segments are crossfaded, with every clip's root aligned to the origin, so
+// the character stays in place (see root_motion).
 
 #include <memory>
 #include <random>
@@ -50,19 +51,20 @@ class PoseWalk {
   // Advances by _dt and outputs the pose, aligned to the origin.
   bool Update(float _dt, ozz::span<ozz::math::Float4x4> _models);
 
-  // Played segment: the transition from -> to of a clip, from when it entered
-  // `from` (start) until it reaches `to` (time = stop). The next segment
-  // starts where its clip entered `to`, crossfading from this clip, which
-  // plays on into `to`. A jump (no transition out of `from`: the clips end
-  // there) plays a frame of `to` from `time` to `stop`.
+  // Played segment: a transition from -> to of a clip, from when the clip
+  // entered `from` (start, at most max_stay before) until it reaches `to`
+  // (time). The next segment starts where its clip entered `to`,
+  // crossfading from this clip, which plays on into `to`. A transition to
+  // -1 plays until the clip ends; the next segment then jumps: its `from` is
+  // a pose the clips start in.
   struct Segment {
+    int transition = -1;  // Index in CommonPoseResult::transitions.
     int from = -1;
     int to = -1;
     bool jump = false;
     int clip = -1;  // Index in CommonPoseResult::clips.
     float start = 0.f;
     float time = 0.f;
-    float stop = 0.f;
   };
   const Segment& segment() const { return segment_; }
   // Playback time in the segment clip.

@@ -33,22 +33,34 @@ struct CommonPose {
   };
   std::vector<Frame> frames;
   float spread = 0.f;  // RMS of frame distances (m).
+};
 
-  // Where the clips go from this pose: the next common pose along each clip,
-  // most frequent first. Bounces (A B A, with B shorter than kMinPoseStay)
-  // are skipped, so flicker between neighbor poses doesn't count.
-  struct Transition {
-    int to;  // Index in CommonPoseResult::poses.
-    struct Example {
-      int clip;
-      float time;   // First frame in the next pose (s).
-      float begin;  // When the clip entered this pose (s).
-      float end;    // When the clip left the next pose (s).
-    };
-    std::vector<Example> examples;
-  };
-  std::vector<Transition> transitions;
-  int num_transitions = 0;  // Sum of transition examples.
+// A place in a clip where it changes common pose. Every clip's transitions
+// start with an entry (from -1, at the clip start) and end with a dead end
+// (to -1, at the clip end), so the clip enters `from` at the previous
+// transition (see EnteredAt). Bounces (A B A, with B shorter than
+// kMinPoseStay) are skipped, so flicker between neighbor poses doesn't count.
+struct PoseTransition {
+  int clip;    // Index in CommonPoseResult::clips.
+  float time;  // First frame in `to`, or the clip end (s).
+  int from;    // Index in CommonPoseResult::poses, -1: clip start.
+  int to;      // Index in CommonPoseResult::poses, -1: clip end.
+};
+
+// The transitions out of a pose into the same pose (-1: the clip ends).
+struct PoseEdge {
+  int to;
+  std::vector<int> transitions;  // Indices in CommonPoseResult::transitions.
+};
+
+// Where the clips go from a pose: edges most frequent first, dead end
+// included, and the number of transitions out of it.
+struct PoseExits {
+  std::vector<PoseEdge> edges;
+  int count = 0;
+  float share(const PoseEdge& _edge) const {
+    return count ? static_cast<float>(_edge.transitions.size()) / count : 0.f;
+  }
 };
 
 // Shortest stay in a common pose that isn't a bounce (s).
@@ -57,10 +69,17 @@ constexpr float kMinPoseStay = .2f;
 struct CommonPoseResult {
   std::vector<std::filesystem::path> clips;
   std::vector<CommonPose> poses;  // Most frames first.
+  // Every clip's transitions in clip, then time order.
+  std::vector<PoseTransition> transitions;
+  std::vector<PoseExits> exits;  // Per pose, grouped from transitions.
   int num_frames = 0;
   double seconds = 0.;
   std::string error;
 };
+
+// When the clip entered the transition's `from` pose (s): the previous
+// transition's time (the transition's own for an entry).
+float EnteredAt(const CommonPoseResult& _result, int _transition);
 
 // Samples every entry at _rate (frames per second), and clusters the poses in
 // _k common poses. Only reads its arguments, so it can run on a worker thread.

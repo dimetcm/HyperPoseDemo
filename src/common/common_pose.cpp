@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <map>
+#include <utility>
 
 #include "common/pose_cluster.h"
 #include "common/pose_match.h"
@@ -20,27 +21,27 @@ struct Sample {
   float time;
 };
 
-// Fills the transitions of every pose from the samples' pose labels: along
-// each clip, runs of samples in the same pose, then a transition between
-// consecutive runs. Samples near a cluster border flicker (A B A), so a run
-// shorter than kMinPoseStay that returns to the previous pose is a bounce,
-// merged into it. Short runs between different poses are kept: fast motions
-// pass through poses quickly.
-void CountTransitions(const std::vector<Sample>& _samples,
-                      const std::vector<int>& _labels, float _rate,
-                      CommonPoseResult* _result) {
+// Fills the transitions from the samples' pose labels: along each clip,
+// runs of samples in the same pose, then an entry into the first run, a
+// transition between consecutive runs and a dead end after the last one.
+// Samples near a cluster border flicker (A B A), so a run shorter than
+// kMinPoseStay that returns to the previous pose is a bounce, merged into it.
+// Short runs between different poses are kept: fast motions pass through
+// poses quickly. _ranges: per clip, the time range sampled (trimmed).
+void BuildTransitions(const std::vector<Sample>& _samples,
+                      const std::vector<int>& _labels,
+                      const std::vector<std::pair<float, float>>& _ranges,
+                      float _rate, CommonPoseResult* _result) {
   struct Run {
     int pose;
     int first;  // Sample index.
     int length;
   };
   const int min_length = std::max(1, static_cast<int>(std::ceil(kMinPoseStay * _rate)));
-  // Per pose, transition counts by target pose.
-  std::vector<std::map<int, std::vector<CommonPose::Transition::Example>>> found(
-      _result->poses.size());
   for (size_t begin = 0; begin < _samples.size();) {
+    const int clip = _samples[begin].clip;
     size_t end = begin;
-    while (end < _samples.size() && _samples[end].clip == _samples[begin].clip) {
+    while (end < _samples.size() && _samples[end].clip == clip) {
       ++end;
     }
     // Runs of the clip.
@@ -63,33 +64,47 @@ void CountTransitions(const std::vector<Sample>& _samples,
       }
       runs.push_back(all[r]);
     }
-    // A run lasts until the next one starts, the last one one sample past
-    // the clip's last sample.
-    auto run_end = [&](size_t _r) {
-      return _r + 1 < runs.size() ? _samples[runs[_r + 1].first].time
-                                  : _samples[end - 1].time + 1.f / _rate;
-    };
+    auto& transitions = _result->transitions;
+    transitions.push_back({clip, _ranges[clip].first, -1, runs.front().pose});
     for (size_t r = 1; r < runs.size(); ++r) {
-      const Sample& sample = _samples[runs[r].first];
-      found[runs[r - 1].pose][runs[r].pose].push_back(
-          {sample.clip, sample.time, _samples[runs[r - 1].first].time, run_end(r)});
+      transitions.push_back(
+          {clip, _samples[runs[r].first].time, runs[r - 1].pose, runs[r].pose});
     }
+    transitions.push_back({clip, _ranges[clip].second, runs.back().pose, -1});
     begin = end;
   }
-  for (size_t p = 0; p < found.size(); ++p) {
-    CommonPose& pose = _result->poses[p];
-    for (auto& [to, examples] : found[p]) {
-      pose.num_transitions += static_cast<int>(examples.size());
-      pose.transitions.push_back({to, std::move(examples)});
+
+  // Grouped by source, then target pose.
+  std::vector<std::map<int, std::vector<int>>> found(_result->poses.size());
+  for (size_t t = 0; t < _result->transitions.size(); ++t) {
+    const PoseTransition& transition = _result->transitions[t];
+    if (transition.from >= 0) {
+      found[transition.from][transition.to].push_back(static_cast<int>(t));
     }
-    std::stable_sort(pose.transitions.begin(), pose.transitions.end(),
-                     [](const auto& _a, const auto& _b) {
-                       return _a.examples.size() > _b.examples.size();
+  }
+  _result->exits.resize(_result->poses.size());
+  for (size_t p = 0; p < found.size(); ++p) {
+    PoseExits& exits = _result->exits[p];
+    for (auto& [to, transitions] : found[p]) {
+      exits.count += static_cast<int>(transitions.size());
+      exits.edges.push_back({to, std::move(transitions)});
+    }
+    std::stable_sort(exits.edges.begin(), exits.edges.end(),
+                     [](const PoseEdge& _a, const PoseEdge& _b) {
+                       return _a.transitions.size() > _b.transitions.size();
                      });
   }
 }
 
 }  // namespace
+
+float EnteredAt(const CommonPoseResult& _result, int _transition) {
+  const PoseTransition& transition = _result.transitions[_transition];
+  if (_transition > 0 && _result.transitions[_transition - 1].clip == transition.clip) {
+    return _result.transitions[_transition - 1].time;
+  }
+  return transition.time;
+}
 
 CommonPoseResult FindCommonPoses(std::vector<PoseSetEntry> _entries,
                                  const ozz::animation::Skeleton* _skeleton,
@@ -98,6 +113,7 @@ CommonPoseResult FindCommonPoses(std::vector<PoseSetEntry> _entries,
   CommonPoseResult result;
   std::vector<Sample> samples;
   std::vector<float> data;
+  std::vector<std::pair<float, float>> ranges;  // Per clip, sampled.
   ozz::animation::Animation animation;
   PoseFeatures features;
   for (size_t e = 0; e < _entries.size(); ++e) {
@@ -109,7 +125,9 @@ CommonPoseResult FindCommonPoses(std::vector<PoseSetEntry> _entries,
       result.error = "Failed to load " + entry.path.filename().string();
       return result;
     }
-    const float end = entry.end < 0.f ? animation.duration() : entry.end;
+    const float end = entry.end < 0.f ? animation.duration()
+                                      : std::min(entry.end, animation.duration());
+    ranges.push_back({entry.begin, end});
     for (int frame = 0; frame < features.num_frames; ++frame) {
       const float time = frame / _rate;
       if (time < entry.begin || time > end) {
@@ -136,7 +154,7 @@ CommonPoseResult FindCommonPoses(std::vector<PoseSetEntry> _entries,
     }
     result.poses.push_back(std::move(pose));
   }
-  CountTransitions(samples, labels, _rate, &result);
+  BuildTransitions(samples, labels, ranges, _rate, &result);
   result.seconds = std::chrono::duration<double>(
                        std::chrono::steady_clock::now() - start)
                        .count();

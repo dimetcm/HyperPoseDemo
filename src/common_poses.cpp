@@ -149,8 +149,8 @@ class CommonPosesApplication : public ozz::sample::Application {
       if (walk_.active()) {
         const hyperpose::PoseWalk::Segment& segment = walk_.segment();
         AddLabel(math::Float4x4::identity(), make_span(models_),
-                 "#" + std::to_string(segment.from + 1) + (segment.jump ? " jump #" : " -> #") +
-                     std::to_string(segment.to + 1) + "\n",
+                 (segment.jump ? "jump #" : "#") + std::to_string(segment.from + 1) +
+                     " -> " + PoseName(segment.to) + "\n",
                  result_.clips[segment.clip], walk_.clip_time(), walk_.clip_duration());
       } else {
         AddLabel(math::Float4x4::identity(), make_span(models_), "", clip_.path(),
@@ -373,6 +373,24 @@ class CommonPosesApplication : public ozz::sample::Application {
                       kRates[rate_], k_, static_cast<uint32_t>(seed_));
   }
 
+  // "#3", or "end" for -1 (a clip end).
+  static std::string PoseName(int _pose) {
+    return _pose < 0 ? "end" : "#" + std::to_string(_pose + 1);
+  }
+
+  // The first _max edges out of a pose with their shares: " #3 60% end 20%".
+  static std::string ExitsText(const hyperpose::PoseExits& _exits, size_t _max) {
+    std::string text;
+    for (size_t e = 0; e < std::min(_exits.edges.size(), _max); ++e) {
+      const hyperpose::PoseEdge& edge = _exits.edges[e];
+      char item[32];
+      std::snprintf(item, sizeof(item), " %s %.0f%%", PoseName(edge.to).c_str(),
+                    _exits.share(edge) * 100.f);
+      text += item;
+    }
+    return text;
+  }
+
   void LogResult() const {
     if (!result_.error.empty()) {
       ozz::log::Err() << result_.error << std::endl;
@@ -395,15 +413,9 @@ class CommonPosesApplication : public ozz::sample::Application {
                     library_.Description(name).c_str());
       ozz::log::Out() << line << std::endl;
       // Top transitions.
-      std::string next = "      ->";
-      for (size_t t = 0; t < std::min<size_t>(pose.transitions.size(), 4); ++t) {
-        const CommonPose::Transition& transition = pose.transitions[t];
-        std::snprintf(line, sizeof(line), " #%d %.0f%%", transition.to + 1,
-                      100.f * transition.examples.size() / pose.num_transitions);
-        next += line;
-      }
-      ozz::log::Out() << next << "  (" << pose.num_transitions << " transitions)"
-                      << std::endl;
+      const hyperpose::PoseExits& exits = result_.exits[c];
+      ozz::log::Out() << "      ->" << ExitsText(exits, 4) << "  (" << exits.count
+                      << " transitions)" << std::endl;
     }
   }
 
@@ -874,8 +886,9 @@ class CommonPosesApplication : public ozz::sample::Application {
   // Transition graph: a node per common pose around a circle, largest first
   // at the top, clockwise, sized by share. Arrows out of (orange) and into
   // (blue) the selected pose, thicker for more frequent; with "All poses",
-  // the other poses' transitions too, grey. Nodes without a drawn arrow are
-  // dimmed. Click a node to select it.
+  // the other poses' transitions too, grey. Clip ends are short "end" arrows
+  // pointing out of the circle. Nodes without a drawn arrow are dimmed.
+  // Click a node to select it.
   void TransitionGraphWindow() {
     if (!show_transitions_ || result_.poses.empty()) {
       return;
@@ -920,8 +933,10 @@ class CommonPosesApplication : public ozz::sample::Application {
     const float max_radius = 24.f * dpi;
     const float min_radius = 9.f * dpi;
     const ImVec2 center(origin.x + size.x * .5f, origin.y + size.y * .5f);
-    const float ring =
-        std::max(10.f, std::min(size.x, size.y) * .5f - max_radius - 14.f * dpi);
+    // Room outside the circle for dead end arrows and their labels.
+    const float kEndLength = 14.f * dpi;
+    const float ring = std::max(
+        10.f, std::min(size.x, size.y) * .5f - max_radius - kEndLength - 24.f * dpi);
     const float largest = static_cast<float>(result_.poses.front().frames.size());
     std::vector<ImVec2> positions(count);
     std::vector<float> radii(count);
@@ -941,21 +956,25 @@ class CommonPosesApplication : public ozz::sample::Application {
 
     // Edges: curved to the right of the direction, so a->b and b->a don't
     // overlap, with an arrow head on the target and the share at the middle.
+    // A dead end (_to -1, the clips end) is a short straight arrow out of the
+    // circle, labeled "end".
     auto edge = [&](int _from, int _to, float _share, ImU32 _color, float _thickness,
                     bool _label) {
-      const ImVec2 a = positions[_from];
-      const ImVec2 b = positions[_to];
-      const float dx = b.x - a.x, dy = b.y - a.y;
-      const float length = std::max(1.f, std::sqrt(dx * dx + dy * dy));
-      const ImVec2 control((a.x + b.x) * .5f - dy / length * length * .15f,
-                           (a.y + b.y) * .5f + dx / length * length * .15f);
       auto toward = [](ImVec2 _p, ImVec2 _q, float _distance) {
         const float x = _q.x - _p.x, y = _q.y - _p.y;
         const float l = std::max(1e-3f, std::sqrt(x * x + y * y));
         return ImVec2(_p.x + x / l * _distance, _p.y + y / l * _distance);
       };
+      const ImVec2 a = positions[_from];
+      const ImVec2 b = _to >= 0 ? positions[_to]
+                                : toward(center, a, ring + radii[_from] + kEndLength);
+      const float dx = b.x - a.x, dy = b.y - a.y;
+      const float length = std::max(1.f, std::sqrt(dx * dx + dy * dy));
+      const float bend = _to >= 0 ? .15f : 0.f;
+      const ImVec2 control((a.x + b.x) * .5f - dy / length * length * bend,
+                           (a.y + b.y) * .5f + dx / length * length * bend);
       const ImVec2 start = toward(a, control, radii[_from]);
-      const ImVec2 end = toward(b, control, radii[_to] + 2.f);
+      const ImVec2 end = _to >= 0 ? toward(b, control, radii[_to] + 2.f) : b;
       // Arrow head along the curve tangent at the end.
       const float tx = end.x - control.x, ty = end.y - control.y;
       const float tl = std::max(1e-3f, std::sqrt(tx * tx + ty * ty));
@@ -968,19 +987,21 @@ class CommonPosesApplication : public ozz::sample::Application {
           ImVec2(base.x + dir.y * head * .5f, base.y - dir.x * head * .5f), _color);
       if (_label) {
         char text[16];
-        std::snprintf(text, sizeof(text), "%.0f%%", _share * 100.f);
-        const ImVec2 mid(.25f * start.x + .5f * control.x + .25f * base.x,
-                         .25f * start.y + .5f * control.y + .25f * base.y);
+        std::snprintf(text, sizeof(text), _to >= 0 ? "%.0f%%" : "end %.0f%%",
+                      _share * 100.f);
         const ImVec2 text_size = ImGui::CalcTextSize(text);
+        // Past the arrow tip for a dead end, else mid curve.
+        const ImVec2 mid =
+            _to >= 0 ? ImVec2(.25f * start.x + .5f * control.x + .25f * base.x,
+                              .25f * start.y + .5f * control.y + .25f * base.y)
+                     : toward(end, ImVec2(2.f * end.x - start.x, 2.f * end.y - start.y),
+                              .5f * std::max(text_size.x, text_size.y) + 3.f * dpi);
         const ImVec2 pos(mid.x - text_size.x * .5f, mid.y - text_size.y * .5f);
         draw_list->AddRectFilled(ImVec2(pos.x - 2.f, pos.y),
                                  ImVec2(pos.x + text_size.x + 2.f, pos.y + text_size.y),
                                  IM_COL32(20, 20, 20, 200), 3.f);
         draw_list->AddText(pos, _color, text);
       }
-    };
-    auto share_of = [](const CommonPose& _pose, const CommonPose::Transition& _t) {
-      return static_cast<float>(_t.examples.size()) / _pose.num_transitions;
     };
     // Grey: other poses' transitions (with "All poses"). Blue: into the
     // selected pose, orange: out of it, drawn last to stay on top. Shares are
@@ -991,23 +1012,28 @@ class CommonPosesApplication : public ozz::sample::Application {
     std::vector<bool> targets(count, false), sources(count, false);
     for (int pass = 0; pass < 3; ++pass) {  // Others, in, out.
       for (int p = 0; p < count; ++p) {
-        const CommonPose& pose = result_.poses[p];
-        for (const CommonPose::Transition& t : pose.transitions) {
-          const float share = share_of(pose, t);
+        const hyperpose::PoseExits& exits = result_.exits[p];
+        for (const hyperpose::PoseEdge& e : exits.edges) {
+          const float share = exits.share(e);
           const bool out = p == pose_;
-          const bool in = t.to == pose_;
+          const bool in = e.to >= 0 && e.to == pose_;
           if (share < min_transition_share_ ||
               (pass == 0 && (out || in || !all_transitions_)) ||
               (pass == 1 && !in) || (pass == 2 && !out)) {
             continue;
           }
-          connected[p] = connected[t.to] = true;
+          connected[p] = true;
+          if (e.to >= 0) {
+            connected[e.to] = true;
+          }
           if (pass == 0) {
-            edge(p, t.to, share, IM_COL32(170, 170, 170, 170),
+            edge(p, e.to, share, IM_COL32(170, 170, 170, 170),
                  (1.f + 4.f * share) * dpi, false);
           } else {
-            (out ? targets[t.to] : sources[p]) = true;
-            edge(p, t.to, share, out ? kOut : kIn, (1.f + 7.f * share) * dpi, true);
+            if (e.to >= 0) {
+              (out ? targets[e.to] : sources[p]) = true;
+            }
+            edge(p, e.to, share, out ? kOut : kIn, (1.f + 7.f * share) * dpi, true);
           }
         }
       }
@@ -1042,13 +1068,7 @@ class CommonPosesApplication : public ozz::sample::Application {
       const CommonPose& pose = result_.poses[hovered];
       const CommonPose::Frame& frame = pose.frames.front();
       const std::string name = result_.clips[frame.clip].stem().string();
-      std::string next;
-      for (size_t t = 0; t < std::min<size_t>(pose.transitions.size(), 4); ++t) {
-        char item[32];
-        std::snprintf(item, sizeof(item), " #%d %.0f%%", pose.transitions[t].to + 1,
-                      share_of(pose, pose.transitions[t]) * 100.f);
-        next += item;
-      }
+      const std::string next = ExitsText(result_.exits[hovered], 4);
       ImGui::SetTooltip("#%d: %.1f%% of frames, spread %.1f cm\n%s @ %.1fs  %s\nnext:%s",
                         hovered + 1, 100.f * pose.frames.size() / result_.num_frames,
                         pose.spread * 100.f, name.c_str(), frame.time,
@@ -1061,21 +1081,22 @@ class CommonPosesApplication : public ozz::sample::Application {
     ImGui::End();
   }
 
-  // Transitions from the selected pose: where its clips go next, most
-  // frequent first. Click a pose to select it, Play to preview the clip
-  // before the transition (cycles through examples).
+  // Transitions from the selected pose: where its clips go next (or end),
+  // most frequent first. Click a pose to select it, Play to preview the clip
+  // before the transition (cycles through the transitions).
   void TransitionsGui() {
-    const CommonPose& pose = result_.poses[pose_];
+    const hyperpose::PoseExits& exits = result_.exits[pose_];
     char header[64];
     std::snprintf(header, sizeof(header), "Transitions from #%d (%d)###transitions",
-                  pose_ + 1, pose.num_transitions);
+                  pose_ + 1, exits.count);
     if (!ImGui::TreeNodeEx(header, ImGuiTreeNodeFlags_DefaultOpen)) {
       return;
     }
     ImGui::SetItemTooltip(
-        "Next common pose along the clips. Bounces back within %.1fs are ignored.",
+        "Next common pose along the clips, or \"end\" where they end in this pose.\n"
+        "Bounces back within %.1fs are ignored.",
         hyperpose::kMinPoseStay);
-    transition_example_.resize(pose.transitions.size());
+    transition_example_.resize(exits.edges.size());
     // Fixed height (scrolls past 6 rows), so the UI below doesn't move when
     // the selected pose changes, as it does during the pose walk.
     const float rows = 6.f + 1.5f;
@@ -1087,43 +1108,47 @@ class CommonPosesApplication : public ozz::sample::Application {
       ImGui::TableSetupColumn("To", ImGuiTableColumnFlags_WidthFixed);
       ImGui::TableSetupColumn("Share", ImGuiTableColumnFlags_WidthFixed);
       ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_WidthFixed);
-      ImGui::TableSetupColumn("Example", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableSetupColumn("Transition", ImGuiTableColumnFlags_WidthStretch);
       ImGui::TableHeadersRow();
-      if (pose.transitions.empty()) {
+      if (exits.edges.empty()) {
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(3);
-        ImGui::TextDisabled("None: the clips end in this pose.");
+        ImGui::TextDisabled("None: only seen in bounces.");
       }
       int select = -1;
-      for (size_t t = 0; t < pose.transitions.size(); ++t) {
-        const CommonPose::Transition& transition = pose.transitions[t];
-        const int count = static_cast<int>(transition.examples.size());
-        ImGui::PushID(static_cast<int>(t));
+      for (size_t e = 0; e < exits.edges.size(); ++e) {
+        const hyperpose::PoseEdge& edge = exits.edges[e];
+        const int count = static_cast<int>(edge.transitions.size());
+        ImGui::PushID(static_cast<int>(e));
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        char label[16];
-        std::snprintf(label, sizeof(label), "#%d", transition.to + 1);
-        if (ImGui::Selectable(label)) {
-          select = transition.to;
+        if (edge.to >= 0) {
+          if (ImGui::Selectable(PoseName(edge.to).c_str())) {
+            select = edge.to;
+          }
+          ImGui::SetItemTooltip("Select pose #%d.", edge.to + 1);
+        } else {
+          ImGui::TextDisabled("end");
+          ImGui::SetItemTooltip("The clips end in this pose.");
         }
-        ImGui::SetItemTooltip("Select pose #%d.", transition.to + 1);
         ImGui::TableNextColumn();
-        ImGui::Text("%.0f%%", 100.f * count / pose.num_transitions);
+        ImGui::Text("%.0f%%", exits.share(edge) * 100.f);
         ImGui::TableNextColumn();
         ImGui::Text("%d", count);
         ImGui::TableNextColumn();
-        int& example = transition_example_[t];
-        const CommonPose::Transition::Example& shown =
-            transition.examples[example % count];
+        int& shown = transition_example_[e];
+        const hyperpose::PoseTransition& transition =
+            result_.transitions[edge.transitions[shown % count]];
         if (ImGui::SmallButton("Play")) {
           // From a bit before, to see the transition happen.
-          StartPreview(result_.clips[shown.clip], std::max(0.f, shown.time - 1.f));
-          example = (example + 1) % count;
+          StartPreview(result_.clips[transition.clip], std::max(0.f, transition.time - 1.f));
+          shown = (shown + 1) % count;
         }
-        ImGui::SetItemTooltip("Plays from 1s before the transition, next example on each click.");
+        ImGui::SetItemTooltip(
+            "Plays from 1s before the transition, the next one on each click.");
         ImGui::SameLine();
-        ImGui::Text("next %d/%d: %s @ %.1fs", example % count + 1, count,
-                    result_.clips[shown.clip].stem().string().c_str(), shown.time);
+        ImGui::Text("next %d/%d: %s @ %.1fs", shown % count + 1, count,
+                    result_.clips[transition.clip].stem().string().c_str(), transition.time);
         ImGui::PopID();
       }
       ImGui::EndTable();
@@ -1217,7 +1242,8 @@ class CommonPosesApplication : public ozz::sample::Application {
     // Selects the pose the character is in (shown in the transition graph):
     // the source pose until the clip reaches the next one.
     const hyperpose::PoseWalk::Segment& segment = walk_.segment();
-    const int pose = walk_.clip_time() < segment.time ? segment.from : segment.to;
+    const int pose =
+        walk_.clip_time() < segment.time || segment.to < 0 ? segment.from : segment.to;
     if (pose != pose_) {
       pose_ = pose;
       frame_ = 0;
@@ -1244,12 +1270,12 @@ class CommonPosesApplication : public ozz::sample::Application {
     if (walk_.active()) {
       const hyperpose::PoseWalk::Segment& segment = walk_.segment();
       ImGui::SameLine();
-      ImGui::Text("#%d %s #%d  %s @ %.1fs", segment.from + 1,
-                  segment.jump ? "jump" : "->", segment.to + 1,
+      ImGui::Text("%s#%d -> %s  %s @ %.1fs", segment.jump ? "jump " : "",
+                  segment.from + 1, PoseName(segment.to).c_str(),
                   result_.clips[segment.clip].stem().string().c_str(), walk_.clip_time());
       if (segment.jump) {
-        ImGui::SetItemTooltip("No transition out of #%d (its clips end there):\n"
-                              "jumped to a random pose.", segment.from + 1);
+        ImGui::SetItemTooltip("The previous clip ended: jumped to #%d, a pose the clips "
+                              "start in.", segment.from + 1);
       }
     }
     const float width = ImGui::GetContentRegionAvail().x / 2.f - ImGui::GetStyle().ItemSpacing.x;
@@ -1535,7 +1561,7 @@ class CommonPosesApplication : public ozz::sample::Application {
   bool show_transitions_ = true;
   bool all_transitions_ = true;
   float min_transition_share_ = .05f;
-  std::vector<int> transition_example_;  // Per transition: next example to play.
+  std::vector<int> transition_example_;  // Per edge: next transition to play.
 };
 
 int main(int _argc, const char** _argv) {

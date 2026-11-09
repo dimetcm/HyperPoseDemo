@@ -85,48 +85,40 @@ void PoseWalk::Stop() {
 }
 
 bool PoseWalk::Next(int _from) {
-  const CommonPose& from = result_->poses[_from];
   Segment segment;
-  segment.from = _from;
-  if (!from.transitions.empty()) {
-    // Next pose, weighted by how often the clips go there, then one of the
-    // examples of that transition.
-    std::vector<double> weights;
-    for (const CommonPose::Transition& t : from.transitions) {
-      weights.push_back(static_cast<double>(t.examples.size()));
+  if (_from < 0 || result_->exits[_from].edges.empty()) {
+    // The clip ended: jumps to a pose the clips start in, weighted by how
+    // many do.
+    std::vector<double> weights(result_->poses.size(), 0.);
+    for (const PoseTransition& transition : result_->transitions) {
+      if (transition.from < 0 && !result_->exits[transition.to].edges.empty()) {
+        weights[transition.to] += 1.;
+      }
     }
-    const CommonPose::Transition& transition =
-        from.transitions[std::discrete_distribution<int>(weights.begin(), weights.end())(rng_)];
-    const CommonPose::Transition::Example& example = transition.examples
-        [std::uniform_int_distribution<size_t>(0, transition.examples.size() - 1)(rng_)];
-    segment.to = transition.to;
-    segment.clip = example.clip;
-    segment.time = segment.stop = example.time;
-    segment.start = std::max(example.begin, example.time - max_stay);
-  } else {
-    // The clips end in this pose: jumps to a frame of a random pose
-    // (weighted by frames), typical frames more often.
-    std::vector<double> weights;
-    for (const CommonPose& pose : result_->poses) {
-      weights.push_back(static_cast<double>(pose.frames.size()));
+    if (std::all_of(weights.begin(), weights.end(), [](double _w) { return _w == 0.; })) {
+      return false;
     }
+    _from = std::discrete_distribution<int>(weights.begin(), weights.end())(rng_);
     segment.jump = true;
-    segment.to = std::discrete_distribution<int>(weights.begin(), weights.end())(rng_);
-    const CommonPose& to = result_->poses[segment.to];
-    const float sigma = std::max(to.spread, 1e-4f);
-    weights.clear();
-    for (const CommonPose::Frame& frame : to.frames) {
-      const double x = frame.distance / sigma;
-      weights.push_back(std::exp(-.5 * x * x));
-    }
-    const CommonPose::Frame& frame =
-        to.frames[std::discrete_distribution<int>(weights.begin(), weights.end())(rng_)];
-    segment.clip = frame.clip;
-    segment.time = segment.start = frame.time;
-    // No stay length known for a frame: a short one, the next segment starts
-    // where a clip entered this pose anyway.
-    segment.stop = frame.time + std::min(max_stay, .5f);
   }
+  // Next pose (or the clip end), weighted by how often the clips go there,
+  // then one of the transitions there.
+  const PoseExits& exits = result_->exits[_from];
+  std::vector<double> weights;
+  for (const PoseEdge& edge : exits.edges) {
+    weights.push_back(static_cast<double>(edge.transitions.size()));
+  }
+  const PoseEdge& edge =
+      exits.edges[std::discrete_distribution<int>(weights.begin(), weights.end())(rng_)];
+  const int index = edge.transitions[std::uniform_int_distribution<size_t>(
+      0, edge.transitions.size() - 1)(rng_)];
+  const PoseTransition& transition = result_->transitions[index];
+  segment.transition = index;
+  segment.from = _from;
+  segment.to = transition.to;
+  segment.clip = transition.clip;
+  segment.time = transition.time;
+  segment.start = std::max(EnteredAt(*result_, index), transition.time - max_stay);
 
   // A new track over the playing ones, reusing a pooled one that holds the
   // clip already.
@@ -152,7 +144,7 @@ bool PoseWalk::Next(int _from) {
   track->clip.loop = false;
   track->clip.speed = 1.f;
   track->age = 0.f;
-  segment.stop = std::min(segment.stop, track->clip.duration());
+  segment.time = std::min(segment.time, track->clip.duration());
   segment_ = segment;
   // Continues from where the character stands.
   Anchor(track.get());
@@ -217,7 +209,7 @@ bool PoseWalk::Update(float _dt, ozz::span<math::Float4x4> _models) {
     track->age += _dt;
   }
   Track* current = tracks_.back().get();
-  if (current->clip.time >= segment_.stop || !current->clip.playing) {
+  if (current->clip.time >= segment_.time || !current->clip.playing) {
     if (!Next(segment_.to)) {
       Stop();
       return false;
