@@ -46,6 +46,7 @@ OZZ_OPTIONS_DECLARE_STRING(
     "", false)
 OZZ_OPTIONS_DECLARE_STRING(clip, "Clip to preview at startup (path).", "",
                            false)
+OZZ_OPTIONS_DECLARE_BOOL(root_motion, "Pose walk with root motion.", false, false)
 OZZ_OPTIONS_DECLARE_BOOL(walk, "Starts the pose walk once common poses are found.",
                          false, false)
 
@@ -78,6 +79,7 @@ class CommonPosesApplication : public ozz::sample::Application {
       StartClustering();
     }
     walk_on_result_ = OPTIONS_walk;
+    walk_.root_motion = OPTIONS_root_motion;
     if (OPTIONS_clip.value()[0]) {
       StartPreview(OPTIONS_clip.value(), 0.f);
     }
@@ -974,6 +976,17 @@ class CommonPosesApplication : public ozz::sample::Application {
     ImGui::SetNextItemWidth(-FLT_MIN);
     ImGui::SliderFloat("##blend", &walk_.blend, 0.f, 1.f, "blend %.2fs");
     ImGui::SetItemTooltip("Crossfade from one transition example to the next.");
+    ImGui::Checkbox("Root motion", &walk_.root_motion);
+    ImGui::SetItemTooltip(
+        "The character moves and turns as the clips do, each transition\n"
+        "continuing from where the last one left it. Off: stays in place,\n"
+        "facing the default heading.");
+    if (walk_.root_motion) {
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Back to origin")) {
+        walk_.ResetPosition();
+      }
+    }
     ImGui::TreePop();
   }
 
