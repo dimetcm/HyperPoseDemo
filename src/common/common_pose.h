@@ -33,7 +33,24 @@ struct CommonPose {
   };
   std::vector<Frame> frames;
   float spread = 0.f;  // RMS of frame distances (m).
+
+  // Where the clips go from this pose: the next common pose along each clip,
+  // most frequent first. Bounces (A B A, with B shorter than kMinPoseStay)
+  // are skipped, so flicker between neighbor poses doesn't count.
+  struct Transition {
+    int to;  // Index in CommonPoseResult::poses.
+    struct Example {
+      int clip;
+      float time;  // First frame in the next pose (s).
+    };
+    std::vector<Example> examples;
+  };
+  std::vector<Transition> transitions;
+  int num_transitions = 0;  // Sum of transition examples.
 };
+
+// Shortest stay in a common pose that isn't a bounce (s).
+constexpr float kMinPoseStay = .2f;
 
 struct CommonPoseResult {
   std::vector<std::filesystem::path> clips;

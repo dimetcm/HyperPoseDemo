@@ -104,11 +104,7 @@ class PoseBlendApplication : public ozz::sample::Application {
         time_ = begin;
       }
     }
-    if (!Evaluate(time_)) {
-      return false;
-    }
-    character_.Update(make_span(models_));
-    return true;
+    return Evaluate(time_);
   }
 
   bool OnDisplay(ozz::sample::Renderer* _renderer) override {
@@ -119,7 +115,7 @@ class PoseBlendApplication : public ozz::sample::Application {
     bool success = true;
     const bool show_character = draw_mesh_ && character_.posed();
     if (show_character) {
-      success &= character_.Draw(_renderer, transform);
+      success &= character_.Draw(_renderer, make_span(models_), transform);
     }
     if (draw_skeleton_ || !show_character) {
       success &= _renderer->DrawPosture(skeleton(), make_span(models_), transform);
@@ -177,10 +173,7 @@ class PoseBlendApplication : public ozz::sample::Application {
     if (!transition_.valid()) {
       return ozz::math::Box();
     }
-    const auto& models =
-        character_.posed() ? character_.joint_model_transforms() : models_;
-    return ozz::sample::ComputePostureBounds(make_span(models),
-                                             math::Float4x4::identity());
+    return character_.Bounds(make_span(models_), math::Float4x4::identity());
   }
 
  private:

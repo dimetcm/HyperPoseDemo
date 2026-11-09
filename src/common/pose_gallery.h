@@ -52,13 +52,11 @@ class PoseGallery {
   const std::string& error() const { return error_; }
 
   // Animated: advances the clips. Still: skins _character once in each pose
-  // when needed (when not done yet, or the character changed), which poses
-  // _character.
+  // when needed (when not done yet, or the character changed).
   void Update(float _dt, CharacterView* _character);
 
   // Draws every pose, as the character (if _draw_mesh and posed) and/or the
-  // clip skeleton. Animated, _character is re-posed for each pose: the caller
-  // restores its own pose after.
+  // clip skeleton.
   bool Draw(ozz::sample::Renderer* _renderer, CharacterView* _character,
             bool _draw_mesh, bool _draw_skeleton);
 

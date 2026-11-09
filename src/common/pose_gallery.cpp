@@ -126,8 +126,7 @@ bool PoseGallery::Baked(const CharacterView& _character) const {
 void PoseGallery::Bake(CharacterView* _character) {
   baked_.assign(still_.size(), {});
   for (size_t c = 0; c < still_.size(); ++c) {
-    _character->Update(make_span(still_[c]));
-    if (!_character->Bake(&baked_[c])) {
+    if (!_character->Bake(make_span(still_[c]), &baked_[c])) {
       baked_.clear();
       break;
     }
@@ -146,8 +145,7 @@ bool PoseGallery::Draw(ozz::sample::Renderer* _renderer,
     const Shown pose = shown(c);
     if (show_character) {
       if (animate) {
-        _character->Update(pose.models);
-        success &= _character->Draw(_renderer, transform);
+        success &= _character->Draw(_renderer, pose.models, transform);
       } else {
         success &= CharacterView::DrawBaked(_renderer, baked_[c], transform);
       }

@@ -49,7 +49,6 @@ bool CharacterView::Select(int _index) {
     return false;
   }
   skeleton_path_ = character.skeleton;
-  models_.resize(skeleton_.num_joints());
 
   // Meshes must be skinned to this skeleton.
   if (!ozz::sample::LoadMeshes(character.mesh.string().c_str(), &meshes_)) {
@@ -102,22 +101,36 @@ bool CharacterView::posed() const {
          (SameSkeleton() || retarget_ok_);
 }
 
-void CharacterView::Update(ozz::span<const ozz::math::Float4x4> _clip_joint_model_transforms) {
-  if (!posed()) {
-    return;
+bool CharacterView::Pose(ozz::span<const ozz::math::Float4x4> _clip_models,
+                         ozz::vector<ozz::math::Float4x4>* _character_models) const {
+  if (!posed() ||
+      static_cast<int>(_clip_models.size()) != clip_skeleton_->num_joints()) {
+    return false;
   }
+  _character_models->resize(skeleton_.num_joints());
   if (SameSkeleton()) {
-    std::copy(_clip_joint_model_transforms.begin(),
-              _clip_joint_model_transforms.end(), models_.begin());
+    std::copy(_clip_models.begin(), _clip_models.end(), _character_models->begin());
   } else {
-    retargeter_.Run(_clip_joint_model_transforms, make_span(models_));
+    retargeter_.Run(_clip_models, make_span(*_character_models));
   }
+  return true;
+}
+
+ozz::math::Box CharacterView::Bounds(
+    ozz::span<const ozz::math::Float4x4> _clip_models,
+    const ozz::math::Float4x4& _transform) const {
+  ozz::vector<ozz::math::Float4x4> models;
+  if (Pose(_clip_models, &models)) {
+    return ozz::sample::ComputePostureBounds(make_span(models), _transform);
+  }
+  return ozz::sample::ComputePostureBounds(_clip_models, _transform);
 }
 
 bool CharacterView::Draw(ozz::sample::Renderer* _renderer,
+                         ozz::span<const ozz::math::Float4x4> _clip_models,
                          const ozz::math::Float4x4& _transform) {
-  if (!posed()) {
-    return true;
+  if (!Pose(_clip_models, &models_)) {
+    return true;  // Nothing to draw.
   }
   bool success = true;
   for (const ozz::sample::Mesh& mesh : meshes_) {
@@ -128,9 +141,10 @@ bool CharacterView::Draw(ozz::sample::Renderer* _renderer,
   return success;
 }
 
-bool CharacterView::Bake(ozz::vector<ozz::sample::Mesh>* _baked) {
+bool CharacterView::Bake(ozz::span<const ozz::math::Float4x4> _clip_models,
+                         ozz::vector<ozz::sample::Mesh>* _baked) {
   _baked->clear();
-  if (!posed()) {
+  if (!Pose(_clip_models, &models_)) {
     return false;
   }
   for (const ozz::sample::Mesh& mesh : meshes_) {

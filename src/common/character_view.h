@@ -12,6 +12,7 @@
 #include "framework/mesh.h"
 #include "ozz/animation/runtime/skeleton.h"
 #include "ozz/base/containers/vector.h"
+#include "ozz/base/maths/box.h"
 #include "ozz/base/maths/simd_math.h"
 #include "ozz/base/span.h"
 
@@ -34,16 +35,28 @@ class CharacterView {
   void SetClipSkeleton(const ozz::animation::Skeleton* _skeleton,
                        const std::filesystem::path& _path);
 
-  // Poses the character from clip joint model-space transforms.
-  void Update(ozz::span<const ozz::math::Float4x4> _clip_joint_model_transforms);
+  // The view holds no pose: every call below takes a clip pose (clip skeleton
+  // joint model-space transforms), so one view can draw many characters.
 
-  // Draws the skinned meshes in the last updated pose.
+  // Character skeleton joint model-space transforms for a clip pose
+  // (retargeted when the skeletons differ). Returns false if not posed().
+  bool Pose(ozz::span<const ozz::math::Float4x4> _clip_models,
+            ozz::vector<ozz::math::Float4x4>* _character_models) const;
+
+  // Joint bounds of the character in a clip pose, or of the clip pose itself
+  // when not posed(), for camera framing.
+  ozz::math::Box Bounds(ozz::span<const ozz::math::Float4x4> _clip_models,
+                        const ozz::math::Float4x4& _transform) const;
+
+  // Draws the skinned meshes in a clip pose.
   bool Draw(ozz::sample::Renderer* _renderer,
+            ozz::span<const ozz::math::Float4x4> _clip_models,
             const ozz::math::Float4x4& _transform);
 
-  // Skins the meshes in the last updated pose once, into static meshes (no
-  // skinning data) that DrawBaked renders without per frame skinning.
-  bool Bake(ozz::vector<ozz::sample::Mesh>* _baked);
+  // Skins the meshes in a clip pose once, into static meshes (no skinning
+  // data) that DrawBaked renders without per frame skinning.
+  bool Bake(ozz::span<const ozz::math::Float4x4> _clip_models,
+            ozz::vector<ozz::sample::Mesh>* _baked);
   static bool DrawBaked(ozz::sample::Renderer* _renderer,
                         const ozz::vector<ozz::sample::Mesh>& _baked,
                         const ozz::math::Float4x4& _transform);
@@ -54,10 +67,6 @@ class CharacterView {
   // True when a character is selected and can follow the clip skeleton.
   bool posed() const;
 
-  // Joint model-space transforms of the character skeleton (last Update).
-  const ozz::vector<ozz::math::Float4x4>& joint_model_transforms() const {
-    return models_;
-  }
   const ozz::vector<ozz::sample::Mesh>& meshes() const { return meshes_; }
 
   // Incremented whenever the selected character changes.
@@ -81,6 +90,7 @@ class CharacterView {
   std::filesystem::path skeleton_path_;
   ozz::animation::Skeleton skeleton_;
   ozz::vector<ozz::sample::Mesh> meshes_;
+  // Scratch: character pose and skinning matrices of the pose being drawn.
   ozz::vector<ozz::math::Float4x4> models_;
   ozz::vector<ozz::math::Float4x4> skinning_matrices_;
 

@@ -87,7 +87,6 @@ class PreviewApplication : public ozz::sample::Application {
                       make_span(models_))) {
       return false;
     }
-    character_.Update(make_span(models_));
     UpdatePointField();
     return true;
   }
@@ -100,7 +99,7 @@ class PreviewApplication : public ozz::sample::Application {
     bool success = true;
     const bool show_character = ShowCharacter();
     if (show_character) {
-      success &= character_.Draw(_renderer, transform);
+      success &= character_.Draw(_renderer, make_span(models_), transform);
     }
     if (draw_skeleton_ || !show_character) {
       success &= _renderer->DrawPosture(clip_skeleton_.skeleton(),
@@ -181,10 +180,7 @@ class PreviewApplication : public ozz::sample::Application {
     if (!clip_.loaded()) {
       return ozz::math::Box();
     }
-    const auto& models =
-        character_.posed() ? character_.joint_model_transforms() : models_;
-    return ozz::sample::ComputePostureBounds(make_span(models),
-                                             ozz::math::Float4x4::identity());
+    return character_.Bounds(make_span(models_), ozz::math::Float4x4::identity());
   }
 
  private:
@@ -200,13 +196,12 @@ class PreviewApplication : public ozz::sample::Application {
       pf.posed_mesh = pf.rest_mesh;
       pf.dirty = true;
     }
-    if (!pf.enabled || !character_.posed()) {
+    if (!pf.enabled || !character_.Pose(make_span(models_), &pf.character_models)) {
       pf.points.clear();
       return;
     }
     auto start = std::chrono::steady_clock::now();
-    if (!hyperpose::PoseMesh(character_.meshes(),
-                             make_span(character_.joint_model_transforms()),
+    if (!hyperpose::PoseMesh(character_.meshes(), make_span(pf.character_models),
                              &pf.posed_mesh)) {
       pf.points.clear();
       return;
@@ -354,6 +349,7 @@ class PreviewApplication : public ozz::sample::Application {
     int character_generation = -1;  // Rest mesh built for this character.
     hyperpose::TriMesh rest_mesh;
     hyperpose::TriMesh posed_mesh;
+    ozz::vector<ozz::math::Float4x4> character_models;  // Character pose.
     ozz::vector<hyperpose::SurfacePoint> samples;
     ozz::vector<ozz::math::Float3> points;
     ozz::vector<ozz::sample::Color> colors;

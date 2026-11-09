@@ -95,12 +95,8 @@ class CommonPosesApplication : public ozz::sample::Application {
     if (previewing_) {
       UpdatePreview(_dt);
     }
-    // Before posing the character for the displayed pose, as baking poses it.
     if (show_gallery_) {
       gallery_.Update(_dt, &character_);
-    }
-    if (pose_valid_) {
-      character_.Update(make_span(models_));
     }
     return true;
   }
@@ -115,13 +111,9 @@ class CommonPosesApplication : public ozz::sample::Application {
       AddLabel(math::Float4x4::identity(), make_span(models_), "", clip_.path(),
                clip_.time, clip_.duration());
     }
-    // Every common pose, in rows behind the displayed pose. Drawing the
-    // animated gallery re-poses the character, so it's restored after.
+    // Every common pose, in rows behind the displayed pose.
     if (show_gallery_ && !gallery_.empty()) {
       success &= gallery_.Draw(_renderer, &character_, draw_mesh_, draw_skeleton_);
-      if (pose_valid_ && gallery_.animate) {
-        character_.Update(make_span(models_));
-      }
       for (int c = 0; c < gallery_.size(); ++c) {
         const hyperpose::PoseGallery::Shown pose = gallery_.shown(c);
         AddLabel(gallery_.Transform(c), pose.models,
@@ -131,6 +123,7 @@ class CommonPosesApplication : public ozz::sample::Application {
     }
     return success;
   }
+
 
   // Queues a debug label above a pose: clip, time / duration (if known, >= 0)
   // and frame number at the clips frame rate.
@@ -152,14 +145,6 @@ class CommonPosesApplication : public ozz::sample::Application {
                                                     root.x, top + .25f, root.z, 1.f)),
                      &anchor.x);
 
-    // WorldToScreen maps the projection to the whole window, bottom up; the
-    // 3D view is the part right of the panel.
-    const ImVec2 display = ImGui::GetIO().DisplaySize;
-    const math::Float2 screen = WorldToScreen(anchor);
-    const float ndc_x = 2.f * screen.x / display.x - 1.f;
-    const ImVec2 pos(gui_left_inset_ + (display.x - gui_left_inset_) * (ndc_x + 1.f) * .5f,
-                     display.y - screen.y);
-
     char text[256];
     const int frame = static_cast<int>(_time * kClipFrameRate + .5f);
     if (_duration >= 0.f) {
@@ -171,7 +156,19 @@ class CommonPosesApplication : public ozz::sample::Application {
       std::snprintf(text, sizeof(text), "%s%s\n%.1fs\nf %d", _prefix.c_str(),
                     _clip.stem().string().c_str(), _time, frame);
     }
-    labels_.push_back({pos, text});
+    AddText(anchor, text);
+  }
+
+  // Queues a text centered above a world point, drawn by DrawLabels.
+  void AddText(const math::Float3& _anchor, const std::string& _text) {
+    // WorldToScreen maps the projection to the whole window, bottom up; the
+    // 3D view is the part right of the panel.
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const math::Float2 screen = WorldToScreen(_anchor);
+    const float ndc_x = 2.f * screen.x / display.x - 1.f;
+    const ImVec2 pos(gui_left_inset_ + (display.x - gui_left_inset_) * (ndc_x + 1.f) * .5f,
+                     display.y - screen.y);
+    labels_.push_back({pos, _text});
   }
 
   // Draws the queued debug labels over the 3D view, centered on their anchor.
@@ -201,7 +198,7 @@ class CommonPosesApplication : public ozz::sample::Application {
     bool success = true;
     const bool show_character = draw_mesh_ && character_.posed();
     if (show_character) {
-      success &= character_.Draw(_renderer, _transform);
+      success &= character_.Draw(_renderer, _models, _transform);
     }
     if (draw_skeleton_ || !show_character) {
       success &= _renderer->DrawPosture(skeleton(), _models, _transform);
@@ -277,6 +274,7 @@ class CommonPosesApplication : public ozz::sample::Application {
     ClustersGui();
     ImGui::EndChild();
     ImGui::End();
+    TransitionGraphWindow();
     DrawLabels();
     return true;
   }
@@ -284,10 +282,7 @@ class CommonPosesApplication : public ozz::sample::Application {
   ozz::math::Box GetSceneBounds() const override {
     ozz::math::Box bounds;
     if (pose_valid_) {
-      const auto& models =
-          character_.posed() ? character_.joint_model_transforms() : models_;
-      bounds = ozz::sample::ComputePostureBounds(make_span(models),
-                                                 math::Float4x4::identity());
+      bounds = character_.Bounds(make_span(models_), math::Float4x4::identity());
     }
     if (show_gallery_ && !gallery_.empty()) {
       // Clip skeleton poses: close enough to the character for framing.
@@ -329,6 +324,16 @@ class CommonPosesApplication : public ozz::sample::Application {
                     pose.spread * 100.f, name.c_str(), frame.time,
                     library_.Description(name).c_str());
       ozz::log::Out() << line << std::endl;
+      // Top transitions.
+      std::string next = "      ->";
+      for (size_t t = 0; t < std::min<size_t>(pose.transitions.size(), 4); ++t) {
+        const CommonPose::Transition& transition = pose.transitions[t];
+        std::snprintf(line, sizeof(line), " #%d %.0f%%", transition.to + 1,
+                      100.f * transition.examples.size() / pose.num_transitions);
+        next += line;
+      }
+      ozz::log::Out() << next << "  (" << pose.num_transitions << " transitions)"
+                      << std::endl;
     }
   }
 
@@ -536,6 +541,7 @@ class CommonPosesApplication : public ozz::sample::Application {
       ImGui::SameLine();
       ImGui::Text("%s @ %.2fs, %.1f cm from pose  %s", name.c_str(), frame.time,
                   frame.distance * 100.f, library_.Description(name).c_str());
+      TransitionsGui();
     }
     if (ImGui::Checkbox("Align pose to origin", &align_to_origin_)) {
       RefreshPose();
@@ -560,13 +566,277 @@ class CommonPosesApplication : public ozz::sample::Application {
     ImGui::SameLine();
     ImGui::Checkbox("Debug text", &debug_text_);
     ImGui::SetItemTooltip("Clip, time / duration and frame above each character.");
+    ImGui::SameLine();
+    ImGui::Checkbox("Transition graph", &show_transitions_);
+    ImGui::SetItemTooltip("Window with the common poses and the transitions between them.");
     ImGui::Separator();
+  }
+
+  // Transition graph: a node per common pose around a circle, largest first
+  // at the top, clockwise, sized by share. Arrows out of (orange) and into
+  // (blue) the selected pose, thicker for more frequent; with "All poses",
+  // the other poses' transitions too, grey. Nodes without a drawn arrow are
+  // dimmed. Click a node to select it.
+  void TransitionGraphWindow() {
+    if (!show_transitions_ || result_.poses.empty()) {
+      return;
+    }
+    const ImGuiIO& io = ImGui::GetIO();
+    const float dpi = ImGui::GetStyle().FontScaleDpi;
+    ImGui::SetNextWindowSize(ImVec2(360.f * dpi, 400.f * dpi), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(
+        ImVec2(io.DisplaySize.x - 370.f * dpi, io.DisplaySize.y - 410.f * dpi),
+        ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Pose transitions", &show_transitions_)) {
+      ImGui::End();
+      return;
+    }
+    ImGui::Checkbox("All poses", &all_transitions_);
+    ImGui::SetItemTooltip("Also the other poses' transitions, in grey.");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::SliderFloat("##min_share", &min_transition_share_, 0.f, .5f,
+                       "hide below %.2f share");
+    if (pose_ >= 0) {
+      ImGui::TextColored(ImVec4(1.f, .67f, .24f, 1.f), "out of #%d", pose_ + 1);
+      ImGui::SameLine();
+      ImGui::TextColored(ImVec4(.35f, .67f, 1.f, 1.f), "into #%d", pose_ + 1);
+      ImGui::SameLine();
+      ImGui::TextDisabled("(%% of source's)");
+      ImGui::SetItemTooltip("Arrow shares are of the source pose's transitions.");
+    }
+
+    // Canvas.
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const ImVec2 size(std::max(avail.x, 60.f), std::max(avail.y, 60.f));
+    ImGui::InvisibleButton("graph", size);
+    const bool hovered_canvas = ImGui::IsItemHovered();
+    const bool clicked = ImGui::IsItemClicked();
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    draw_list->PushClipRect(origin, ImVec2(origin.x + size.x, origin.y + size.y), true);
+
+    // Nodes.
+    const int count = static_cast<int>(result_.poses.size());
+    const float max_radius = 24.f * dpi;
+    const float min_radius = 9.f * dpi;
+    const ImVec2 center(origin.x + size.x * .5f, origin.y + size.y * .5f);
+    const float ring =
+        std::max(10.f, std::min(size.x, size.y) * .5f - max_radius - 14.f * dpi);
+    const float largest = static_cast<float>(result_.poses.front().frames.size());
+    std::vector<ImVec2> positions(count);
+    std::vector<float> radii(count);
+    int hovered = -1;
+    for (int p = 0; p < count; ++p) {
+      const float angle = -1.5707963f + 6.2831853f * p / count;
+      positions[p] = ImVec2(center.x + ring * std::cos(angle),
+                            center.y + ring * std::sin(angle));
+      radii[p] = min_radius + (max_radius - min_radius) *
+                                  std::sqrt(result_.poses[p].frames.size() / largest);
+      const float dx = io.MousePos.x - positions[p].x;
+      const float dy = io.MousePos.y - positions[p].y;
+      if (hovered_canvas && dx * dx + dy * dy <= radii[p] * radii[p]) {
+        hovered = p;
+      }
+    }
+
+    // Edges: curved to the right of the direction, so a->b and b->a don't
+    // overlap, with an arrow head on the target and the share at the middle.
+    auto edge = [&](int _from, int _to, float _share, ImU32 _color, float _thickness,
+                    bool _label) {
+      const ImVec2 a = positions[_from];
+      const ImVec2 b = positions[_to];
+      const float dx = b.x - a.x, dy = b.y - a.y;
+      const float length = std::max(1.f, std::sqrt(dx * dx + dy * dy));
+      const ImVec2 control((a.x + b.x) * .5f - dy / length * length * .15f,
+                           (a.y + b.y) * .5f + dx / length * length * .15f);
+      auto toward = [](ImVec2 _p, ImVec2 _q, float _distance) {
+        const float x = _q.x - _p.x, y = _q.y - _p.y;
+        const float l = std::max(1e-3f, std::sqrt(x * x + y * y));
+        return ImVec2(_p.x + x / l * _distance, _p.y + y / l * _distance);
+      };
+      const ImVec2 start = toward(a, control, radii[_from]);
+      const ImVec2 end = toward(b, control, radii[_to] + 2.f);
+      // Arrow head along the curve tangent at the end.
+      const float tx = end.x - control.x, ty = end.y - control.y;
+      const float tl = std::max(1e-3f, std::sqrt(tx * tx + ty * ty));
+      const ImVec2 dir(tx / tl, ty / tl);
+      const float head = (6.f + _thickness * 1.5f) * dpi;
+      const ImVec2 base(end.x - dir.x * head, end.y - dir.y * head);
+      draw_list->AddBezierQuadratic(start, control, base, _color, _thickness);
+      draw_list->AddTriangleFilled(
+          end, ImVec2(base.x - dir.y * head * .5f, base.y + dir.x * head * .5f),
+          ImVec2(base.x + dir.y * head * .5f, base.y - dir.x * head * .5f), _color);
+      if (_label) {
+        char text[16];
+        std::snprintf(text, sizeof(text), "%.0f%%", _share * 100.f);
+        const ImVec2 mid(.25f * start.x + .5f * control.x + .25f * base.x,
+                         .25f * start.y + .5f * control.y + .25f * base.y);
+        const ImVec2 text_size = ImGui::CalcTextSize(text);
+        const ImVec2 pos(mid.x - text_size.x * .5f, mid.y - text_size.y * .5f);
+        draw_list->AddRectFilled(ImVec2(pos.x - 2.f, pos.y),
+                                 ImVec2(pos.x + text_size.x + 2.f, pos.y + text_size.y),
+                                 IM_COL32(20, 20, 20, 200), 3.f);
+        draw_list->AddText(pos, _color, text);
+      }
+    };
+    auto share_of = [](const CommonPose& _pose, const CommonPose::Transition& _t) {
+      return static_cast<float>(_t.examples.size()) / _pose.num_transitions;
+    };
+    // Grey: other poses' transitions (with "All poses"). Blue: into the
+    // selected pose, orange: out of it, drawn last to stay on top. Shares are
+    // of the source pose's transitions.
+    const ImU32 kOut = IM_COL32(255, 170, 60, 255);
+    const ImU32 kIn = IM_COL32(90, 170, 255, 255);
+    std::vector<bool> connected(count, false);  // Has a drawn arrow.
+    std::vector<bool> targets(count, false), sources(count, false);
+    for (int pass = 0; pass < 3; ++pass) {  // Others, in, out.
+      for (int p = 0; p < count; ++p) {
+        const CommonPose& pose = result_.poses[p];
+        for (const CommonPose::Transition& t : pose.transitions) {
+          const float share = share_of(pose, t);
+          const bool out = p == pose_;
+          const bool in = t.to == pose_;
+          if (share < min_transition_share_ ||
+              (pass == 0 && (out || in || !all_transitions_)) ||
+              (pass == 1 && !in) || (pass == 2 && !out)) {
+            continue;
+          }
+          connected[p] = connected[t.to] = true;
+          if (pass == 0) {
+            edge(p, t.to, share, IM_COL32(170, 170, 170, 170),
+                 (1.f + 4.f * share) * dpi, false);
+          } else {
+            (out ? targets[t.to] : sources[p]) = true;
+            edge(p, t.to, share, out ? kOut : kIn, (1.f + 7.f * share) * dpi, true);
+          }
+        }
+      }
+    }
+
+    // Nodes over the edges: selected orange, its targets / sources tinted,
+    // nodes without a drawn arrow dimmed.
+    for (int p = 0; p < count; ++p) {
+      const bool dim = !connected[p] && p != pose_;
+      const ImU32 fill = p == pose_     ? IM_COL32(230, 140, 40, 255)
+                         : targets[p] ? IM_COL32(120, 90, 50, 255)
+                         : sources[p] ? IM_COL32(50, 85, 125, 255)
+                         : dim        ? IM_COL32(40, 40, 40, 255)
+                                      : IM_COL32(75, 75, 75, 255);
+      draw_list->AddCircleFilled(positions[p], radii[p], fill);
+      draw_list->AddCircle(positions[p], radii[p],
+                           p == hovered ? IM_COL32(255, 255, 255, 255)
+                           : dim        ? IM_COL32(90, 90, 90, 255)
+                                        : IM_COL32(160, 160, 160, 255),
+                           0, p == hovered ? 2.f : 1.f);
+      char text[8];
+      std::snprintf(text, sizeof(text), "#%d", p + 1);
+      const ImVec2 text_size = ImGui::CalcTextSize(text);
+      draw_list->AddText(ImVec2(positions[p].x - text_size.x * .5f,
+                                positions[p].y - text_size.y * .5f),
+                         dim ? IM_COL32(120, 120, 120, 255) : IM_COL32(255, 255, 255, 255),
+                         text);
+    }
+    draw_list->PopClipRect();
+
+    if (hovered >= 0) {
+      const CommonPose& pose = result_.poses[hovered];
+      const CommonPose::Frame& frame = pose.frames.front();
+      const std::string name = result_.clips[frame.clip].stem().string();
+      std::string next;
+      for (size_t t = 0; t < std::min<size_t>(pose.transitions.size(), 4); ++t) {
+        char item[32];
+        std::snprintf(item, sizeof(item), " #%d %.0f%%", pose.transitions[t].to + 1,
+                      share_of(pose, pose.transitions[t]) * 100.f);
+        next += item;
+      }
+      ImGui::SetTooltip("#%d: %.1f%% of frames, spread %.1f cm\n%s @ %.1fs  %s\nnext:%s",
+                        hovered + 1, 100.f * pose.frames.size() / result_.num_frames,
+                        pose.spread * 100.f, name.c_str(), frame.time,
+                        library_.Description(name).c_str(),
+                        next.empty() ? " none" : next.c_str());
+      if (clicked) {
+        SelectPose(hovered);
+      }
+    }
+    ImGui::End();
+  }
+
+  // Transitions from the selected pose: where its clips go next, most
+  // frequent first. Click a pose to select it, Play to preview the clip
+  // before the transition (cycles through examples).
+  void TransitionsGui() {
+    const CommonPose& pose = result_.poses[pose_];
+    char header[64];
+    std::snprintf(header, sizeof(header), "Transitions from #%d (%d)###transitions",
+                  pose_ + 1, pose.num_transitions);
+    if (!ImGui::TreeNodeEx(header, ImGuiTreeNodeFlags_DefaultOpen)) {
+      return;
+    }
+    ImGui::SetItemTooltip(
+        "Next common pose along the clips. Bounces back within %.1fs are ignored.",
+        hyperpose::kMinPoseStay);
+    if (pose.transitions.empty()) {
+      ImGui::TextDisabled("None: the clips end in this pose.");
+    }
+    transition_example_.resize(pose.transitions.size());
+    const float rows = std::min<float>(pose.transitions.size(), 6.f) + 1.5f;
+    if (!pose.transitions.empty() &&
+        ImGui::BeginTable("transitions", 4,
+                          ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
+                              ImGuiTableFlags_BordersInnerV,
+                          ImVec2(0.f, rows * ImGui::GetTextLineHeightWithSpacing()))) {
+      ImGui::TableSetupScrollFreeze(0, 1);
+      ImGui::TableSetupColumn("To", ImGuiTableColumnFlags_WidthFixed);
+      ImGui::TableSetupColumn("Share", ImGuiTableColumnFlags_WidthFixed);
+      ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_WidthFixed);
+      ImGui::TableSetupColumn("Example", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableHeadersRow();
+      int select = -1;
+      for (size_t t = 0; t < pose.transitions.size(); ++t) {
+        const CommonPose::Transition& transition = pose.transitions[t];
+        const int count = static_cast<int>(transition.examples.size());
+        ImGui::PushID(static_cast<int>(t));
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        char label[16];
+        std::snprintf(label, sizeof(label), "#%d", transition.to + 1);
+        if (ImGui::Selectable(label)) {
+          select = transition.to;
+        }
+        ImGui::SetItemTooltip("Select pose #%d.", transition.to + 1);
+        ImGui::TableNextColumn();
+        ImGui::Text("%.0f%%", 100.f * count / pose.num_transitions);
+        ImGui::TableNextColumn();
+        ImGui::Text("%d", count);
+        ImGui::TableNextColumn();
+        int& example = transition_example_[t];
+        const CommonPose::Transition::Example& shown =
+            transition.examples[example % count];
+        if (ImGui::SmallButton("Play")) {
+          // From a bit before, to see the transition happen.
+          StartPreview(result_.clips[shown.clip], std::max(0.f, shown.time - 1.f));
+          example = (example + 1) % count;
+        }
+        ImGui::SetItemTooltip("Plays from 1s before the transition, next example on each click.");
+        ImGui::SameLine();
+        ImGui::Text("next %d/%d: %s @ %.1fs", example % count + 1, count,
+                    result_.clips[shown.clip].stem().string().c_str(), shown.time);
+        ImGui::PopID();
+      }
+      ImGui::EndTable();
+      if (select >= 0) {
+        SelectPose(select);
+      }
+    }
+    ImGui::TreePop();
   }
 
   // Selects a common pose (-1 for none), showing its most typical frame.
   void SelectPose(int _pose) {
     pose_ = _pose;
     frame_ = 0;
+    transition_example_.clear();
     if (pose_ >= 0) {
       ShowFrame(frame_);
     }
@@ -699,6 +969,12 @@ class CommonPosesApplication : public ozz::sample::Application {
   };
   std::vector<Label> labels_;
   bool debug_text_ = true;
+  // Transition graph window: arrows rarer than the share are hidden; all
+  // poses' transitions, or only the selected pose's.
+  bool show_transitions_ = true;
+  bool all_transitions_ = true;
+  float min_transition_share_ = .05f;
+  std::vector<int> transition_example_;  // Per transition: next example to play.
 };
 
 int main(int _argc, const char** _argv) {
