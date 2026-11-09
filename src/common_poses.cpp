@@ -334,12 +334,34 @@ class CommonPosesApplication : public ozz::sample::Application {
   }
 
  private:
+  // Pose set entry of _clip, nullptr if not in the set.
+  PoseSetEntry* FindEntry(const fs::path& _clip) {
+    const auto it = std::find_if(set_.begin(), set_.end(),
+                                 [&](const PoseSetEntry& _e) { return _e.path == _clip; });
+    return it == set_.end() ? nullptr : &*it;
+  }
+
+  // Trim range of an entry: the part of the clip used (end < 0: clip end).
+  static float TrimEnd(const PoseSetEntry& _entry) {
+    return _entry.end < 0.f ? _entry.duration : std::min(_entry.end, _entry.duration);
+  }
+  static bool Trimmed(const PoseSetEntry& _entry) {
+    return _entry.begin > 0.f || TrimEnd(_entry) < _entry.duration;
+  }
+  static void SetTrim(PoseSetEntry* _entry, float _begin, float _end) {
+    const float duration = _entry->duration;
+    _entry->begin = std::clamp(_begin, 0.f, duration);
+    _end = std::clamp(_end, _entry->begin, duration);
+    _entry->end = _end >= duration - 1e-3f ? -1.f : _end;  // Clip end.
+  }
+
   // Starts clustering the pose set on a worker thread.
   void StartClustering() {
     if (set_.empty() || job_.valid()) {
       return;
     }
     status_.clear();
+    clustered_project_ = CurrentProject();
     job_ = std::async(std::launch::async, hyperpose::FindCommonPoses, set_, &skeleton(),
                       kRates[rate_], k_, static_cast<uint32_t>(seed_));
   }
@@ -652,9 +674,9 @@ class CommonPosesApplication : public ozz::sample::Application {
   }
 
   void PoseSetGui() {
-    float total = 0.f;
+    float total = 0.f;  // Of the trimmed clips.
     for (const PoseSetEntry& entry : set_) {
-      total += entry.duration;
+      total += TrimEnd(entry) - entry.begin;
     }
     char header[96];
     std::snprintf(header, sizeof(header), "Pose set: %d clips, %.0fs###set",
@@ -662,7 +684,7 @@ class CommonPosesApplication : public ozz::sample::Application {
     if (!ImGui::CollapsingHeader(header, ImGuiTreeNodeFlags_DefaultOpen)) {
       return;
     }
-    ImGui::TextDisabled("Tick clips below to add them, click any clip to preview it.");
+    ImGui::TextDisabled("Tick clips below to add them, click any clip to preview (and trim) it.");
     const std::vector<fs::path> filtered = library_.FilteredClips();
     char add[64];
     std::snprintf(add, sizeof(add), "Add all filtered (%d)",
@@ -679,7 +701,7 @@ class CommonPosesApplication : public ozz::sample::Application {
       set_.clear();
     }
 
-    // Set list (time ranges are kept for trimming).
+    // Set list, with trim ranges.
     if (!set_.empty()) {
       const float line = ImGui::GetTextLineHeightWithSpacing();
       ImGui::BeginChild("set", ImVec2(0.f, std::min<float>(set_.size(), 6.f) * line + line * .5f),
@@ -694,13 +716,17 @@ class CommonPosesApplication : public ozz::sample::Application {
         ImGui::SameLine();
         const std::string name = set_[i].path.stem().string();
         char label[128];
-        std::snprintf(label, sizeof(label), "%s  %.1fs", name.c_str(),
-                      set_[i].duration);
+        if (Trimmed(set_[i])) {
+          std::snprintf(label, sizeof(label), "%s  %.1f-%.1fs of %.1fs", name.c_str(),
+                        set_[i].begin, TrimEnd(set_[i]), set_[i].duration);
+        } else {
+          std::snprintf(label, sizeof(label), "%s  %.1fs", name.c_str(), set_[i].duration);
+        }
         if (ImGui::Selectable(label, PreviewedClip() == set_[i].path, 0,
                               ImVec2(ImGui::CalcTextSize(label).x, 0.f))) {
           PreviewClip(set_[i].path);
         }
-        ImGui::SetItemTooltip("Click to preview.");
+        ImGui::SetItemTooltip("Click to preview and trim.");
         const std::string& description = library_.Description(name);
         if (!description.empty()) {
           ImGui::SameLine();
@@ -740,6 +766,10 @@ class CommonPosesApplication : public ozz::sample::Application {
 
     if (result_.poses.empty()) {
       return;
+    }
+    if (!running && CurrentProject() != clustered_project_) {
+      ImGui::TextColored(ImVec4(1.f, .7f, .3f, 1.f),
+                         "Pose set, trims or settings changed: find common poses again.");
     }
     ImGui::Text("%d frames from %d clips in %.1fs", result_.num_frames,
                 static_cast<int>(result_.clips.size()), result_.seconds);
@@ -1232,7 +1262,21 @@ class CommonPosesApplication : public ozz::sample::Application {
   }
 
   void UpdatePreview(float _dt) {
+    const bool playing = clip_.playing;
     clip_.Advance(_dt);
+    // Plays the trim range only: wraps (or stops) at its ends.
+    const PoseSetEntry* entry = FindEntry(clip_.path());
+    if (playing && play_trim_ && entry && Trimmed(*entry)) {
+      const float begin = entry->begin, end = TrimEnd(*entry);
+      if (clip_.time > end || clip_.time < begin) {
+        if (clip_.loop) {
+          clip_.time = clip_.speed >= 0.f ? begin : end;
+        } else {
+          clip_.time = std::clamp(clip_.time, begin, end);
+          clip_.playing = false;
+        }
+      }
+    }
     SampleClip(clip_.path(), clip_.time);
   }
 
@@ -1244,10 +1288,13 @@ class CommonPosesApplication : public ozz::sample::Application {
     const std::string name = clip_.path().stem().string();
     ImGui::Text("%s  %s", name.c_str(), library_.Description(name).c_str());
     const float duration = clip_.duration();
+    PoseSetEntry* entry = FindEntry(clip_.path());
+    const bool trim_range = play_trim_ && entry && Trimmed(*entry);
     if (ImGui::Button(clip_.playing ? "Pause" : "Play",
                       ImVec2(ImGui::GetFontSize() * 4.f, 0.f))) {
-      if (!clip_.playing && !clip_.loop && clip_.time >= duration) {
-        clip_.time = 0.f;  // Replays from the start.
+      const float end = trim_range ? TrimEnd(*entry) : duration;
+      if (!clip_.playing && !clip_.loop && clip_.time >= end) {
+        clip_.time = trim_range ? entry->begin : 0.f;  // Replays from the start.
       }
       clip_.playing = !clip_.playing;
     }
@@ -1267,7 +1314,71 @@ class CommonPosesApplication : public ozz::sample::Application {
     if (ImGui::SliderFloat("##time", &clip_.time, 0.f, duration, "%.2fs")) {
       clip_.playing = false;
     }
+    if (entry && Trimmed(*entry) && duration > 0.f) {
+      // Trimmed out parts shaded on the time slider.
+      const ImVec2 min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+      auto x = [&](float _t) { return min.x + (max.x - min.x) * _t / duration; };
+      ImDrawList* draw_list = ImGui::GetWindowDrawList();
+      const ImU32 shade = IM_COL32(0, 0, 0, 150);
+      draw_list->AddRectFilled(min, ImVec2(x(entry->begin), max.y), shade);
+      draw_list->AddRectFilled(ImVec2(x(TrimEnd(*entry)), min.y), max, shade);
+      const ImU32 mark = IM_COL32(255, 170, 60, 255);
+      draw_list->AddLine(ImVec2(x(entry->begin), min.y), ImVec2(x(entry->begin), max.y), mark, 2.f);
+      draw_list->AddLine(ImVec2(x(TrimEnd(*entry)), min.y), ImVec2(x(TrimEnd(*entry)), max.y),
+                         mark, 2.f);
+    }
+    TrimGui(entry);
     ImGui::Separator();
+  }
+
+  // Trim range of the previewed clip, for this project: the part of the clip
+  // used for the common poses. The clip file isn't changed.
+  void TrimGui(PoseSetEntry* _entry) {
+    const bool running = job_.valid();
+    if (!_entry) {
+      ImGui::BeginDisabled(running);
+      if (ImGui::SmallButton("Add to pose set")) {
+        Add(clip_.path());
+      }
+      ImGui::EndDisabled();
+      ImGui::SameLine();
+      ImGui::TextDisabled("to trim it.");
+      return;
+    }
+    ImGui::BeginDisabled(running);
+    float begin = _entry->begin, end = TrimEnd(*_entry);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Trim");
+    ImGui::SetItemTooltip(
+        "Part of the clip used for the common poses, saved with the project.\n"
+        "The clip file isn't changed.");
+    ImGui::SameLine();
+    const float buttons = ImGui::CalcTextSize("[ now] nowReset").x +
+                          ImGui::GetStyle().FramePadding.x * 6.f +
+                          ImGui::GetStyle().ItemSpacing.x * 3.f;
+    ImGui::SetNextItemWidth(std::max(80.f, ImGui::GetContentRegionAvail().x - buttons));
+    if (ImGui::DragFloatRange2("##trim", &begin, &end, .01f, 0.f, _entry->duration,
+                               "begin %.2fs", "end %.2fs", ImGuiSliderFlags_AlwaysClamp)) {
+      SetTrim(_entry, begin, end);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("[ now")) {
+      SetTrim(_entry, clip_.time, std::max(end, clip_.time));
+    }
+    ImGui::SetItemTooltip("Begin at the current time.");
+    ImGui::SameLine();
+    if (ImGui::Button("] now")) {
+      SetTrim(_entry, std::min(begin, clip_.time), clip_.time);
+    }
+    ImGui::SetItemTooltip("End at the current time.");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!Trimmed(*_entry));
+    if (ImGui::Button("Reset")) {
+      SetTrim(_entry, 0.f, _entry->duration);
+    }
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+    ImGui::Checkbox("Play trim range only", &play_trim_);
   }
 
   // Samples _clip at _time into models_, aligned to the origin if enabled.
@@ -1305,6 +1416,10 @@ class CommonPosesApplication : public ozz::sample::Application {
   char save_name_[128] = {};
   bool pending_new_ = false;
   fs::path pending_open_;
+  // Preview plays only the trim range of a set clip.
+  bool play_trim_ = true;
+  // Set and settings the common poses were found for, to flag stale ones.
+  hyperpose::PoseProject clustered_project_;
   hyperpose::ClipSkeleton clip_skeleton_;
 
   // Clustering.
