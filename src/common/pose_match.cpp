@@ -95,11 +95,12 @@ bool ExtractPoseFeatures(const ozz::animation::Animation& _animation,
     f.root_positions[frame] = root;
     f.root_headings[frame] = heading;
 
-    const math::Float3 root_ground(root.x, 0.f, root.z);
+    // Relative to the whole root position, height included: clips whose
+    // root sits at a different height (vertical offset) still compare.
     for (int j = 0; j < f.num_joints; ++j) {
       math::Float3 p;
       math::Store3PtrU(models[j].cols[3], &p.x);
-      f.positions[frame * f.num_joints + j] = RotateY(p - root_ground, -heading);
+      f.positions[frame * f.num_joints + j] = RotateY(p - root, -heading);
     }
   }
 

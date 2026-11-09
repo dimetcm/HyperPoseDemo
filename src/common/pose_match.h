@@ -4,8 +4,9 @@
 // difference matrices and best transition search.
 //
 // Pose features are joint positions relative to the root, with the root
-// horizontal position and heading (rotation about Y) removed, so poses compare
-// regardless of where the character stands and which way it faces. Joint
+// position (height included) and heading (rotation about Y) removed, so poses
+// compare regardless of where the character stands, which way it faces and
+// any vertical offset of the clip. Joint
 // velocities are included, so poses moving in opposite directions don't match.
 
 #include "ozz/base/containers/vector.h"
