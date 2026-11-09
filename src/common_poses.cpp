@@ -782,6 +782,9 @@ class CommonPosesApplication : public ozz::sample::Application {
       ImGui::EndTable();
     }
 
+    // Above the selected pose's details, which the walk changes.
+    WalkGui();
+
     // Frames of the selected common pose, most typical first.
     if (pose_ >= 0) {
       const CommonPose& pose = result_.poses[pose_];
@@ -802,7 +805,6 @@ class CommonPosesApplication : public ozz::sample::Application {
                   frame.distance * 100.f, library_.Description(name).c_str());
       TransitionsGui();
     }
-    WalkGui();
     if (ImGui::Checkbox("Align pose to origin", &align_to_origin_)) {
       RefreshPose();
     }
@@ -1036,13 +1038,11 @@ class CommonPosesApplication : public ozz::sample::Application {
     ImGui::SetItemTooltip(
         "Next common pose along the clips. Bounces back within %.1fs are ignored.",
         hyperpose::kMinPoseStay);
-    if (pose.transitions.empty()) {
-      ImGui::TextDisabled("None: the clips end in this pose.");
-    }
     transition_example_.resize(pose.transitions.size());
-    const float rows = std::min<float>(pose.transitions.size(), 6.f) + 1.5f;
-    if (!pose.transitions.empty() &&
-        ImGui::BeginTable("transitions", 4,
+    // Fixed height (scrolls past 6 rows), so the UI below doesn't move when
+    // the selected pose changes, as it does during the pose walk.
+    const float rows = 6.f + 1.5f;
+    if (ImGui::BeginTable("transitions", 4,
                           ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
                               ImGuiTableFlags_BordersInnerV,
                           ImVec2(0.f, rows * ImGui::GetTextLineHeightWithSpacing()))) {
@@ -1052,6 +1052,11 @@ class CommonPosesApplication : public ozz::sample::Application {
       ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_WidthFixed);
       ImGui::TableSetupColumn("Example", ImGuiTableColumnFlags_WidthStretch);
       ImGui::TableHeadersRow();
+      if (pose.transitions.empty()) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(3);
+        ImGui::TextDisabled("None: the clips end in this pose.");
+      }
       int select = -1;
       for (size_t t = 0; t < pose.transitions.size(); ++t) {
         const CommonPose::Transition& transition = pose.transitions[t];
