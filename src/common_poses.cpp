@@ -19,6 +19,7 @@
 #include "common/clip_player.h"
 #include "common/common_pose.h"
 #include "common/pose_gallery.h"
+#include "common/pose_project.h"
 #include "common/pose_walk.h"
 #include "common/pose_match.h"
 #include "framework/application.h"
@@ -47,6 +48,10 @@ OZZ_OPTIONS_DECLARE_STRING(
 OZZ_OPTIONS_DECLARE_STRING(clip, "Clip to preview at startup (path).", "",
                            false)
 OZZ_OPTIONS_DECLARE_BOOL(root_motion, "Pose walk with root motion.", false, false)
+OZZ_OPTIONS_DECLARE_STRING(projects, "Folder of project files.",
+                           HYPERPOSE_PROJECTS_DIR, false)
+OZZ_OPTIONS_DECLARE_STRING(
+    project, "Project to open at startup (default: the most recent one).", "", false)
 OZZ_OPTIONS_DECLARE_BOOL(walk, "Starts the pose walk once common poses are found.",
                          false, false)
 
@@ -71,6 +76,18 @@ class CommonPosesApplication : public ozz::sample::Application {
       status_ = "No .ozz clips found in " + std::string(OPTIONS_root.value());
     }
     character_.Scan(OPTIONS_root.value());
+    projects_dir_ = OPTIONS_projects.value();
+    NewProject();
+    // A given project, else (unless building a set from a filter) the most
+    // recent one.
+    if (OPTIONS_project.value()[0]) {
+      OpenProject(OPTIONS_project.value());
+    } else if (!OPTIONS_auto_set.value()[0]) {
+      const fs::path recent = hyperpose::RecentPoseProject();
+      if (!recent.empty()) {
+        OpenProject(recent);
+      }
+    }
     if (OPTIONS_auto_set.value()[0]) {
       library_.SetFilter(OPTIONS_auto_set);
       for (const fs::path& clip : library_.FilteredClips()) {
@@ -253,6 +270,8 @@ class CommonPosesApplication : public ozz::sample::Application {
                  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
     gui_left_inset_ = ImGui::GetWindowWidth();
 
+    ProjectGui();
+    ImGui::Separator();
     library_.DrawFilter();
     if (!status_.empty()) {
       ImGui::TextWrapped("%s", status_.c_str());
@@ -357,6 +376,223 @@ class CommonPosesApplication : public ozz::sample::Application {
       ozz::log::Out() << next << "  (" << pose.num_transitions << " transitions)"
                       << std::endl;
     }
+  }
+
+  // Project: the pose set and common pose settings, as saved.
+  hyperpose::PoseProject CurrentProject() const {
+    hyperpose::PoseProject project;
+    for (const PoseSetEntry& entry : set_) {
+      // Relative to the clip root, so projects survive moving the assets.
+      fs::path path = entry.path.lexically_relative(library_.root());
+      if (path.empty() || *path.begin() == "..") {
+        path = entry.path;
+      }
+      project.clips.push_back({path, entry.begin, entry.end});
+    }
+    project.clusters = k_;
+    project.rate = kRates[rate_];
+    project.seed = seed_;
+    return project;
+  }
+
+  bool ProjectDirty() const { return CurrentProject() != saved_project_; }
+
+  std::string ProjectName() const {
+    return project_path_.empty() ? "Untitled" : project_path_.stem().string();
+  }
+
+  // Empty, untitled project with default settings.
+  void NewProject() {
+    set_.clear();
+    k_ = 12;
+    rate_ = 1;
+    seed_ = 1;
+    project_path_.clear();
+    saved_project_ = CurrentProject();
+  }
+
+  // Loads a project's set and settings, then finds its common poses. Clips
+  // that are missing or don't share the skeleton are left out (the project
+  // then shows as changed).
+  bool OpenProject(const fs::path& _path) {
+    if (job_.valid()) {
+      return false;
+    }
+    hyperpose::PoseProject project;
+    std::string error;
+    if (!hyperpose::LoadPoseProject(_path, &project, &error)) {
+      status_ = error;
+      return false;
+    }
+    set_.clear();
+    int missing = 0;
+    for (const hyperpose::PoseProject::Clip& clip : project.clips) {
+      const fs::path path = clip.path.is_absolute() ? clip.path : library_.root() / clip.path;
+      const size_t size = set_.size();
+      std::error_code ec;
+      if (!fs::exists(path, ec) || !Add(path) || set_.size() == size) {
+        ++missing;
+        continue;
+      }
+      set_.back().begin = clip.begin;
+      set_.back().end = clip.end;
+    }
+    k_ = std::clamp(project.clusters, 2, 64);
+    rate_ = 0;
+    for (int i = 0; i < IM_ARRAYSIZE(kRates); ++i) {
+      if (std::fabs(kRates[i] - project.rate) < std::fabs(kRates[rate_] - project.rate)) {
+        rate_ = i;
+      }
+    }
+    seed_ = project.seed;
+    project_path_ = _path;
+    saved_project_ = missing ? project : CurrentProject();
+    hyperpose::SetRecentPoseProject(_path);
+    status_ = "Opened " + ProjectName() + ": " + std::to_string(set_.size()) + " clips";
+    if (missing) {
+      status_ += ", " + std::to_string(missing) + " missing or not loaded";
+    }
+    walk_.Stop();
+    StartClustering();
+    return true;
+  }
+
+  bool SaveProject(const fs::path& _path) {
+    const hyperpose::PoseProject project = CurrentProject();
+    std::string error;
+    if (!hyperpose::SavePoseProject(_path, project, &error)) {
+      status_ = error;
+      return false;
+    }
+    project_path_ = _path;
+    saved_project_ = project;
+    hyperpose::SetRecentPoseProject(_path);
+    status_ = "Saved " + _path.string();
+    return true;
+  }
+
+  // Project name (* when changed) and New / Open / Save / Save as. Changes
+  // are confirmed before New or Open drop them.
+  void ProjectGui() {
+    const bool dirty = ProjectDirty();
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("Project: %s%s", ProjectName().c_str(), dirty ? "*" : "");
+    if (!project_path_.empty()) {
+      ImGui::SetItemTooltip("%s", project_path_.string().c_str());
+    }
+    ImGui::BeginDisabled(job_.valid());
+    const float right = ImGui::GetContentRegionMax().x;
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float buttons = ImGui::CalcTextSize("NewOpen...SaveSave as...").x +
+                          style.FramePadding.x * 8.f + style.ItemSpacing.x * 3.f;
+    ImGui::SameLine(std::max(ImGui::GetCursorPosX(), right - buttons));
+    bool open_save_as = false;
+    if (ImGui::Button("New")) {
+      pending_open_.clear();
+      pending_new_ = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Open...")) {
+      project_list_ = hyperpose::ListPoseProjects(projects_dir_);
+      ImGui::OpenPopup("Open project");
+    }
+    ImGui::SameLine();
+    const bool save = ImGui::Button("Save") ||
+                      ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal);
+    if (save) {
+      if (project_path_.empty()) {
+        open_save_as = true;
+      } else {
+        SaveProject(project_path_);
+      }
+    }
+    ImGui::SetItemTooltip("Ctrl+S");
+    ImGui::SameLine();
+    if (ImGui::Button("Save as...")) {
+      open_save_as = true;
+    }
+    ImGui::EndDisabled();
+
+    // Open: projects of the projects folder, most recent first.
+    if (ImGui::BeginPopup("Open project")) {
+      ImGui::TextDisabled("%s", projects_dir_.string().c_str());
+      if (project_list_.empty()) {
+        ImGui::TextUnformatted("No projects yet: Save as... to make one.");
+      }
+      for (const fs::path& path : project_list_) {
+        if (ImGui::Selectable(path.stem().string().c_str(), path == project_path_)) {
+          pending_open_ = path;
+        }
+      }
+      ImGui::EndPopup();
+    }
+
+    // Save as: a name in the projects folder.
+    if (open_save_as) {
+      const std::string name = project_path_.empty() ? "" : ProjectName();
+      std::snprintf(save_name_, sizeof(save_name_), "%s", name.c_str());
+      ImGui::OpenPopup("Save project as");
+    }
+    if (ImGui::BeginPopupModal("Save project as", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+      if (ImGui::IsWindowAppearing()) {
+        ImGui::SetKeyboardFocusHere();
+      }
+      const bool enter = ImGui::InputText("Name", save_name_, sizeof(save_name_),
+                                          ImGuiInputTextFlags_EnterReturnsTrue);
+      const fs::path path = projects_dir_ / (std::string(save_name_) + hyperpose::kProjectExtension);
+      std::error_code ec;
+      const bool valid = save_name_[0] && fs::path(save_name_).filename() == fs::path(save_name_);
+      if (valid && fs::exists(path, ec) && path != project_path_) {
+        ImGui::TextColored(ImVec4(1.f, .7f, .3f, 1.f), "Replaces the existing %s.", save_name_);
+      }
+      ImGui::BeginDisabled(!valid);
+      if (ImGui::Button("Save") || (enter && valid)) {
+        SaveProject(path);
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndDisabled();
+      ImGui::SameLine();
+      if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    }
+
+    // New / Open, confirmed when that drops changes.
+    if (pending_new_ || !pending_open_.empty()) {
+      if (!dirty) {
+        ApplyPending();
+      } else if (!ImGui::IsPopupOpen("Discard changes?")) {
+        ImGui::OpenPopup("Discard changes?");
+      }
+    }
+    if (ImGui::BeginPopupModal("Discard changes?", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::Text("%s has unsaved changes.", ProjectName().c_str());
+      if (ImGui::Button("Discard")) {
+        ApplyPending();
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        pending_new_ = false;
+        pending_open_.clear();
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    }
+  }
+
+  void ApplyPending() {
+    if (pending_new_) {
+      NewProject();
+      status_.clear();
+    } else if (!pending_open_.empty()) {
+      OpenProject(pending_open_);
+    }
+    pending_new_ = false;
+    pending_open_.clear();
   }
 
   // Adds a clip to the pose set, or removes it if already in. All clips must
@@ -1055,6 +1291,15 @@ class CommonPosesApplication : public ozz::sample::Application {
 
   // Pose set and shared skeleton.
   std::vector<PoseSetEntry> set_;
+
+  // Project file of the set and settings, as last opened / saved.
+  fs::path projects_dir_;
+  fs::path project_path_;  // Empty: untitled.
+  hyperpose::PoseProject saved_project_;
+  std::vector<fs::path> project_list_;  // Open popup.
+  char save_name_[128] = {};
+  bool pending_new_ = false;
+  fs::path pending_open_;
   hyperpose::ClipSkeleton clip_skeleton_;
 
   // Clustering.

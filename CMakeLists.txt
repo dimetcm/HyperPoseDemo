@@ -56,6 +56,8 @@ add_library(hyperpose_common STATIC
   src/common/pose_gallery.cpp
   src/common/pose_walk.h
   src/common/pose_walk.cpp
+  src/common/pose_project.h
+  src/common/pose_project.cpp
   src/common/character_view.h
   src/common/character_view.cpp)
 target_include_directories(hyperpose_common PUBLIC src)
@@ -78,7 +80,9 @@ target_compile_definitions(PoseBlend PRIVATE HYPERPOSE_ASSETS_DIR="${CMAKE_SOURC
 # Common Poses: clusters the poses of a set of clips.
 add_executable(CommonPoses src/common_poses.cpp)
 target_link_libraries(CommonPoses PRIVATE hyperpose_common)
-target_compile_definitions(CommonPoses PRIVATE HYPERPOSE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/Assets")
+target_compile_definitions(CommonPoses PRIVATE
+  HYPERPOSE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/Assets"
+  HYPERPOSE_PROJECTS_DIR="${CMAKE_SOURCE_DIR}/Projects")
 
 # Asset pipeline: rescales/builds raw archives from fbx2ozz (see Tools/convert_fbx.py).
 add_executable(ozz_fixup Tools/ozz_fixup/main.cpp)
