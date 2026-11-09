@@ -47,7 +47,7 @@ OZZ_OPTIONS_DECLARE_STRING(
     "", false)
 OZZ_OPTIONS_DECLARE_STRING(clip, "Clip to preview at startup (path).", "",
                            false)
-OZZ_OPTIONS_DECLARE_BOOL(root_motion, "Pose walk with root motion.", false, false)
+OZZ_OPTIONS_DECLARE_BOOL(root_motion, "Root motion for the preview and pose walk.", false, false)
 OZZ_OPTIONS_DECLARE_STRING(projects, "Folder of project files.",
                            HYPERPOSE_PROJECTS_DIR, false)
 OZZ_OPTIONS_DECLARE_STRING(
@@ -114,7 +114,14 @@ class CommonPosesApplication : public ozz::sample::Application {
       if (!gallery_.Build(result_, &skeleton(), clip_skeleton_.heading_axis())) {
         status_ = gallery_.error();
       }
-      SelectPose(result_.poses.empty() ? -1 : 0);
+      if (previewing_) {
+        // Selects the first pose without interrupting the preview.
+        pose_ = result_.poses.empty() ? -1 : 0;
+        frame_ = 0;
+        transition_example_.clear();
+      } else {
+        SelectPose(result_.poses.empty() ? -1 : 0);
+      }
       if (walk_on_result_ && !result_.poses.empty()) {
         StartWalk();  // First result only.
         walk_on_result_ = false;
@@ -1171,7 +1178,16 @@ class CommonPosesApplication : public ozz::sample::Application {
     }
     status_.clear();
     walk_.Stop();
-    previewing_ = SampleClip(_clip, _time);
+    previewing_ = false;
+    if (!SampleClip(_clip, _time)) {  // Loads the clip.
+      return;
+    }
+    previewing_ = true;
+    if (walk_.root_motion) {
+      // Root motion from the origin.
+      AnchorPreview(_time, true);
+      SampleClip(_clip, _time);
+    }
     clip_.playing = true;
   }
 
@@ -1247,22 +1263,70 @@ class CommonPosesApplication : public ozz::sample::Application {
     ImGui::SetNextItemWidth(-FLT_MIN);
     ImGui::SliderFloat("##blend", &walk_.blend, 0.f, 1.f, "blend %.2fs");
     ImGui::SetItemTooltip("Crossfade from one transition example to the next.");
-    ImGui::Checkbox("Root motion", &walk_.root_motion);
+    RootMotionGui();
+    ImGui::TreePop();
+  }
+
+  // Root motion of the main character (preview and pose walk) and the
+  // character's place, shared by both.
+  void RootMotionGui() {
+    if (ImGui::Checkbox("Root motion", &walk_.root_motion)) {
+      // Continues from where the character stands.
+      if (previewing_ && walk_.root_motion) {
+        AnchorPreview(clip_.time, false);
+      }
+      RefreshPose();
+    }
     ImGui::SetItemTooltip(
-        "The character moves and turns as the clips do, each transition\n"
-        "continuing from where the last one left it. Off: stays in place,\n"
+        "The main character moves and turns as its clip does: a preview from\n"
+        "the origin, continuing from where it is when looping; the pose walk\n"
+        "continuing from where each transition left it. Off: stays in place,\n"
         "facing the default heading.");
     if (walk_.root_motion) {
       ImGui::SameLine();
       if (ImGui::SmallButton("Back to origin")) {
         walk_.ResetPosition();
+        if (previewing_) {
+          AnchorPreview(clip_.time, true);
+          RefreshPose();
+        }
       }
     }
-    ImGui::TreePop();
   }
+
+  // Preview root motion: places the clip so that its root at _time stands at
+  // the origin facing the default heading (_origin), or where the character
+  // root is (last pose).
+  void AnchorPreview(float _time, bool _origin) {
+    ozz::vector<math::Float4x4> models(skeleton().num_joints());
+    if (!clip_.Sample(_time, make_span(models))) {
+      return;
+    }
+    const int axis = clip_skeleton_.heading_axis();
+    math::Float3 target = math::Float3::zero();
+    float target_heading = 0.f;
+    if (!_origin && pose_valid_) {
+      math::Store3PtrU(models_[0].cols[3], &target.x);
+      target_heading = hyperpose::RootHeading(models_[0], axis);
+    }
+    math::Float3 root;
+    math::Store3PtrU(models[0].cols[3], &root.x);
+    const float heading = hyperpose::RootHeading(models[0], axis);
+    auto yaw = [](float _angle) {
+      return math::Float4x4::FromAxisAngle(math::simd_float4::y_axis(),
+                                           math::simd_float4::Load1(_angle));
+    };
+    preview_anchor_ =
+        math::Float4x4::Translation(math::simd_float4::Load(target.x, 0.f, target.z, 1.f)) *
+        yaw(target_heading - heading) *
+        math::Float4x4::Translation(math::simd_float4::Load(-root.x, 0.f, -root.z, 1.f));
+  }
+
+  bool PreviewRootMotion() const { return previewing_ && walk_.root_motion; }
 
   void UpdatePreview(float _dt) {
     const bool playing = clip_.playing;
+    const float previous = clip_.time;
     clip_.Advance(_dt);
     // Plays the trim range only: wraps (or stops) at its ends.
     const PoseSetEntry* entry = FindEntry(clip_.path());
@@ -1276,6 +1340,12 @@ class CommonPosesApplication : public ozz::sample::Application {
           clip_.playing = false;
         }
       }
+    }
+    // Wrapped around (loop or trim range): root motion continues from where
+    // the character is.
+    const bool wrapped = clip_.speed >= 0.f ? clip_.time < previous : clip_.time > previous;
+    if (playing && wrapped && PreviewRootMotion()) {
+      AnchorPreview(clip_.time, false);
     }
     SampleClip(clip_.path(), clip_.time);
   }
@@ -1328,6 +1398,7 @@ class CommonPosesApplication : public ozz::sample::Application {
                          mark, 2.f);
     }
     TrimGui(entry);
+    RootMotionGui();
     ImGui::Separator();
   }
 
@@ -1381,7 +1452,8 @@ class CommonPosesApplication : public ozz::sample::Application {
     ImGui::Checkbox("Play trim range only", &play_trim_);
   }
 
-  // Samples _clip at _time into models_, aligned to the origin if enabled.
+  // Samples _clip at _time into models_: placed by the preview anchor with
+  // root motion, else aligned to the origin if enabled.
   bool SampleClip(const fs::path& _clip, float _time) {
     pose_valid_ = false;
     if (_clip != clip_.path() && !clip_.Load(_clip, skeleton())) {
@@ -1392,7 +1464,11 @@ class CommonPosesApplication : public ozz::sample::Application {
     if (!clip_.Sample(make_span(models_))) {
       return false;
     }
-    if (align_to_origin_) {
+    if (PreviewRootMotion()) {
+      for (math::Float4x4& model : models_) {
+        model = preview_anchor_ * model;
+      }
+    } else if (align_to_origin_) {
       hyperpose::AlignToOrigin(make_span(models_), clip_skeleton_.heading_axis());
     }
     pose_valid_ = true;
@@ -1444,6 +1520,8 @@ class CommonPosesApplication : public ozz::sample::Application {
   bool align_to_origin_ = true;
   bool pose_valid_ = false;
   ozz::vector<math::Float4x4> models_;
+  // Preview root motion: places the clip (see AnchorPreview).
+  math::Float4x4 preview_anchor_ = math::Float4x4::identity();
 
   // Debug labels of this frame (screen position, text).
   struct Label {
