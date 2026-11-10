@@ -4,3 +4,7 @@ build/
 # Large binary assets (~1.6 GB) are kept out of git.
 # Re-download HF data with Tools/hf_download.py.
 Assets/
+
+# Personal notes and local project files.
+NOTES.md
+Projects/
