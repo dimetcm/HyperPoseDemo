@@ -36,7 +36,7 @@ class PoseGallery {
   ~PoseGallery();
 
   // Settings.
-  bool animate = true;
+  bool animate = false;
   float spacing = 1.f;    // Between characters (m).
   float play_time = 1.f;  // Animated: play time of each picked frame (s).
 
