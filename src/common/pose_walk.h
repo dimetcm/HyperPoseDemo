@@ -33,6 +33,18 @@ class PoseWalk {
   float max_stay = 4.f;
   float blend = .25f;  // Crossfade between segments.
 
+  // Best match blend (narrow phase, after the common pose transition is
+  // picked): the next segment is picked match_horizon before the clip
+  // reaches the next pose, then the blend is placed at the closest pair of
+  // frames (see PoseFrameDifference): this clip from now until
+  // match_horizon past its transition, the next clip while it's in the
+  // shared pose. A transition that carries on in the same clip keeps
+  // playing it. Off: blends when the clip reaches the next pose, into where
+  // the next clip entered it.
+  bool best_match = false;
+  float match_horizon = .5f;
+  float velocity_weight = .1f;  // Seconds, see PoseFrameDifference.
+
   // Root motion: the character moves and turns as the clips do, each segment
   // continuing from where the previous one left the root. Off: the root
   // stays above the origin, facing the default heading.
@@ -68,8 +80,22 @@ class PoseWalk {
     int clip = -1;  // Index in CommonPoseResult::clips.
     float start = 0.f;
     float time = 0.f;
+    // How it was entered: the pose difference of the blend into it (m, -1
+    // for the first segment), or continued: the previous segment's clip
+    // carried on into it, no blend.
+    float difference = -1.f;
+    bool continued = false;
   };
   const Segment& segment() const { return segment_; }
+
+  // Blends since the walk started, to compare blend settings.
+  struct BlendStats {
+    int blends = 0;
+    float total_difference = 0.f;  // m.
+    int continued = 0;             // Segments entered without a blend.
+    float mean() const { return blends ? total_difference / blends : 0.f; }
+  };
+  const BlendStats& stats() const { return stats_; }
   // Playback time in the segment clip.
   float clip_time() const;
   float clip_duration() const;
@@ -90,9 +116,14 @@ class PoseWalk {
     ozz::vector<ozz::math::SoaTransform> locals;
   };
 
-  // Picks and starts the segment out of _from; _after_end: right after a
+  // Picks the segment out of _from (broad phase); _after_end: right after a
   // clip end, so not to a clip end again.
-  bool Next(int _from, bool _after_end);
+  bool Pick(int _from, bool _after_end, Segment* _segment);
+  // Places the blend into next_ (blend_at_, next_.start), from _now in the
+  // current segment's clip.
+  void Plan(float _now);
+  // Starts playing _segment in a new track, crossfading over the others.
+  bool Begin(const Segment& _segment);
   // Samples the track's clip at its time into its locals, with the root
   // aligned to the origin, or placed by its offset with root motion.
   bool SampleRoot(Track* _track);
@@ -104,6 +135,11 @@ class PoseWalk {
   const ozz::animation::Skeleton* skeleton_ = nullptr;
   int heading_axis_ = 0;
   Segment segment_;
+  // Picked next segment, waiting for the current clip to reach blend_at_.
+  Segment next_;
+  bool pending_ = false;
+  float blend_at_ = 0.f;
+  BlendStats stats_;
   // Playing tracks, oldest first: the last one plays the segment, the
   // others fade out under it. A segment shorter than the blend leaves
   // several fading at once, so none is cut mid fade.

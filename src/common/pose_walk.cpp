@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 #include "common/pose_match.h"
@@ -61,6 +62,7 @@ bool PoseWalk::Start(const CommonPoseResult* _result,
   root_position_ = math::Float3::zero();
   root_heading_ = 0.f;
   anchored_motion_ = root_motion;
+  stats_ = BlendStats();
   blended_.resize(skeleton_->num_soa_joints());
   if (_pose < 0) {
     std::vector<double> weights;
@@ -69,7 +71,7 @@ bool PoseWalk::Start(const CommonPoseResult* _result,
     }
     _pose = std::discrete_distribution<int>(weights.begin(), weights.end())(rng_);
   }
-  if (!Next(_pose, false)) {
+  if (!Pick(_pose, false, &next_) || !Begin(next_)) {
     Stop();
     return false;
   }
@@ -79,13 +81,15 @@ bool PoseWalk::Start(const CommonPoseResult* _result,
 void PoseWalk::Stop() {
   result_ = nullptr;
   segment_ = Segment();
+  pending_ = false;
   // Loaded clips may not match the next skeleton.
   tracks_.clear();
   pool_.clear();
 }
 
-bool PoseWalk::Next(int _from, bool _after_end) {
-  Segment segment;
+bool PoseWalk::Pick(int _from, bool _after_end, Segment* _segment) {
+  Segment& segment = *_segment;
+  segment = Segment();
   segment.after_end = _after_end;
   // Right after a clip end, only transitions to a pose, so the walk goes on
   // instead of ending again.
@@ -127,7 +131,55 @@ bool PoseWalk::Next(int _from, bool _after_end) {
   segment.clip = transition.clip;
   segment.time = transition.time;
   segment.start = std::max(EnteredAt(*result_, index), transition.time - max_stay);
+  return true;
+}
 
+void PoseWalk::Plan(float _now) {
+  Segment& next = next_;
+  blend_at_ = segment_.time;
+  const PoseFeatures& a = result_->features[segment_.clip];
+  const PoseFeatures& b = result_->features[next.clip];
+  auto frame = [](const PoseFeatures& _f, float _time) {
+    return std::clamp(static_cast<int>(std::lround(_time * _f.frame_rate)), 0,
+                      _f.num_frames - 1);
+  };
+  if (!best_match) {
+    next.difference = PoseFrameDifference(a, frame(a, segment_.time), b,
+                                          frame(b, next.start), velocity_weight);
+    return;
+  }
+  if (next.clip == segment_.clip && next.transition == segment_.transition + 1) {
+    // Carries on in the same clip: no blend.
+    next.continued = true;
+    next.start = segment_.time;
+    next.difference = 0.f;
+    return;
+  }
+  // Closest pair: this clip from now until match_horizon past its transition,
+  // the next clip while it's in the shared pose.
+  const int a_first = frame(a, _now);
+  const int a_last = std::max(a_first, frame(a, segment_.time + match_horizon));
+  const int b_first = frame(b, next.start);
+  const int b_last = std::max(b_first, frame(b, next.time));
+  int best_a = a_first, best_b = b_first;
+  float best = std::numeric_limits<float>::max();
+  for (int i = a_first; i <= a_last; ++i) {
+    for (int j = b_first; j <= b_last; ++j) {
+      const float difference = PoseFrameDifference(a, i, b, j, velocity_weight);
+      if (difference < best) {
+        best = difference;
+        best_a = i;
+        best_b = j;
+      }
+    }
+  }
+  blend_at_ = best_a / a.frame_rate;
+  next.start = best_b / b.frame_rate;
+  next.difference = best;
+}
+
+bool PoseWalk::Begin(const Segment& _segment) {
+  Segment segment = _segment;
   // A new track over the playing ones, reusing a pooled one that holds the
   // clip already.
   const auto& path = result_->clips[segment.clip];
@@ -216,14 +268,37 @@ bool PoseWalk::Update(float _dt, ozz::span<math::Float4x4> _models) {
     track->clip.Advance(_dt);
     track->age += _dt;
   }
-  Track* current = tracks_.back().get();
-  if (current->clip.time >= segment_.time || !current->clip.playing) {
-    // After a clip end, goes on from the pose it ended in, with another
-    // clip that leaves that pose.
-    const bool ended = segment_.to < 0;
-    if (!Next(ended ? segment_.from : segment_.to, ended)) {
-      Stop();
-      return false;
+  const Track& current = *tracks_.back();
+  const float now = current.clip.time;
+  const bool done = !current.clip.playing;  // Reached the clip end.
+  if (!pending_) {
+    // The next segment is picked when the clip reaches the next pose, or
+    // match_horizon before for a best match blend.
+    const float trigger = best_match ? segment_.time - match_horizon : segment_.time;
+    if (now >= trigger || done) {
+      // After a clip end, goes on from the pose it ended in, with another
+      // clip that leaves that pose.
+      const bool ended = segment_.to < 0;
+      if (!Pick(ended ? segment_.from : segment_.to, ended, &next_)) {
+        Stop();
+        return false;
+      }
+      Plan(now);
+      pending_ = true;
+    }
+  }
+  if (pending_ && (now >= blend_at_ || done)) {
+    pending_ = false;
+    if (next_.continued) {
+      ++stats_.continued;
+      segment_ = next_;
+    } else {
+      ++stats_.blends;
+      stats_.total_difference += next_.difference;
+      if (!Begin(next_)) {
+        Stop();
+        return false;
+      }
     }
   }
   // Root motion switched on: continues from where the character stands.

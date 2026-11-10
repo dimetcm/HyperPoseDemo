@@ -54,6 +54,7 @@ OZZ_OPTIONS_DECLARE_STRING(
     project, "Project to open at startup (default: the most recent one).", "", false)
 OZZ_OPTIONS_DECLARE_BOOL(walk, "Starts the pose walk once common poses are found.",
                          false, false)
+OZZ_OPTIONS_DECLARE_BOOL(best_match, "Best match blend for the pose walk.", false, false)
 
 namespace {
 
@@ -97,6 +98,7 @@ class CommonPosesApplication : public ozz::sample::Application {
     }
     walk_on_result_ = OPTIONS_walk;
     walk_.root_motion = OPTIONS_root_motion;
+    walk_.best_match = OPTIONS_best_match;
     if (OPTIONS_clip.value()[0]) {
       StartPreview(OPTIONS_clip.value(), 0.f);
     }
@@ -1297,6 +1299,44 @@ class CommonPosesApplication : public ozz::sample::Application {
     ImGui::SetNextItemWidth(-FLT_MIN);
     ImGui::SliderFloat("##blend", &walk_.blend, 0.f, 1.f, "blend %.2fs");
     ImGui::SetItemTooltip("Crossfade from one transition example to the next.");
+    ImGui::Checkbox("Best match blend", &walk_.best_match);
+    ImGui::SetItemTooltip(
+        "Narrow phase: once the next transition is picked, blends at the closest\n"
+        "pair of frames (joint positions and velocities): this clip from the\n"
+        "horizon before it reaches the next pose to the horizon after, the\n"
+        "next clip while it's in that pose. Carries on without a blend when\n"
+        "the transition continues the same clip.\n"
+        "Off: blends when the clip reaches the next pose, into where the next\n"
+        "clip entered it.");
+    if (walk_.best_match) {
+      ImGui::SetNextItemWidth(width);
+      ImGui::SliderFloat("##horizon", &walk_.match_horizon, .05f, 2.f, "horizon %.2fs");
+      ImGui::SetItemTooltip("How far before and after the transition the blend can move.");
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(-FLT_MIN);
+      ImGui::SliderFloat("##velocity_weight", &walk_.velocity_weight, 0.f, 1.f,
+                         "velocity weight %.2fs");
+      ImGui::SetItemTooltip(
+          "Weight of joint velocity differences against positions (seconds),\n"
+          "so poses moving the opposite way don't match.");
+    }
+    {
+      // Always a line, so the UI below doesn't move when the walk starts.
+      const hyperpose::PoseWalk::Segment& segment = walk_.segment();
+      if (!walk_.active() || (!segment.continued && segment.difference < 0.f)) {
+        ImGui::TextDisabled("Last blend: -");
+      } else if (segment.continued) {
+        ImGui::TextDisabled("Last blend: none, the clip carried on.");
+      } else {
+        ImGui::TextDisabled("Last blend: %.1f cm pose difference.", segment.difference * 100.f);
+      }
+      const hyperpose::PoseWalk::BlendStats& stats = walk_.stats();
+      ImGui::SetItemTooltip(
+          "Pose difference where the walk blended into this segment: mean joint\n"
+          "distance plus velocity weight x mean joint velocity difference.\n"
+          "Since the walk started: %d blends, mean %.1f cm; %d carried on.",
+          stats.blends, stats.mean() * 100.f, stats.continued);
+    }
     RootMotionGui();
     ImGui::TreePop();
   }

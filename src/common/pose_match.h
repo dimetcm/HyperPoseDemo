@@ -63,8 +63,14 @@ struct PoseDifference {
   float at(int _a, int _b) const { return values[_a * cols + _b]; }
 };
 
-// Mean joint position distance, plus _velocity_weight (seconds) times mean
-// joint velocity distance. a and b must share frame rate and joint count.
+// Pose difference between frame _a_frame of a and _b_frame of b: mean joint
+// position distance, plus _velocity_weight (seconds) times mean joint
+// velocity distance (m). a and b must share frame rate and joint count.
+float PoseFrameDifference(const PoseFeatures& _a, int _a_frame,
+                          const PoseFeatures& _b, int _b_frame,
+                          float _velocity_weight);
+
+// PoseFrameDifference between every frame of a and b.
 void ComputePoseDifference(const PoseFeatures& _a, const PoseFeatures& _b,
                            float _velocity_weight, PoseDifference* _difference);
 

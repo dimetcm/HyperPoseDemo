@@ -129,22 +129,30 @@ void ComputePoseDifference(const PoseFeatures& _a, const PoseFeatures& _b,
   if (num_joints == 0) {
     return;
   }
-  const float inv_joints = 1.f / num_joints;
   for (int a = 0; a < d.rows; ++a) {
-    const math::Float3* pa = &_a.positions[a * _a.num_joints];
-    const math::Float3* va = &_a.velocities[a * _a.num_joints];
     for (int b = 0; b < d.cols; ++b) {
-      const math::Float3* pb = &_b.positions[b * _b.num_joints];
-      const math::Float3* vb = &_b.velocities[b * _b.num_joints];
-      float position = 0.f, velocity = 0.f;
-      for (int j = 0; j < num_joints; ++j) {
-        position += Length(pa[j] - pb[j]);
-        velocity += Length(va[j] - vb[j]);
-      }
-      d.values[a * d.cols + b] =
-          (position + _velocity_weight * velocity) * inv_joints;
+      d.values[a * d.cols + b] = PoseFrameDifference(_a, a, _b, b, _velocity_weight);
     }
   }
+}
+
+float PoseFrameDifference(const PoseFeatures& _a, int _a_frame,
+                          const PoseFeatures& _b, int _b_frame,
+                          float _velocity_weight) {
+  const int num_joints = std::min(_a.num_joints, _b.num_joints);
+  if (num_joints == 0) {
+    return 0.f;
+  }
+  const math::Float3* pa = &_a.positions[_a_frame * _a.num_joints];
+  const math::Float3* va = &_a.velocities[_a_frame * _a.num_joints];
+  const math::Float3* pb = &_b.positions[_b_frame * _b.num_joints];
+  const math::Float3* vb = &_b.velocities[_b_frame * _b.num_joints];
+  float position = 0.f, velocity = 0.f;
+  for (int j = 0; j < num_joints; ++j) {
+    position += Length(pa[j] - pb[j]);
+    velocity += Length(va[j] - vb[j]);
+  }
+  return (position + _velocity_weight * velocity) / num_joints;
 }
 
 bool IsValidTransition(const PoseDifference& _difference, int _a_frame,

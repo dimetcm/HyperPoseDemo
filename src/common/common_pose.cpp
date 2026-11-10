@@ -125,6 +125,11 @@ CommonPoseResult FindCommonPoses(std::vector<PoseSetEntry> _entries,
       result.error = "Failed to load " + entry.path.filename().string();
       return result;
     }
+    result.features.emplace_back();
+    if (!ExtractPoseFeatures(animation, *_skeleton, kMatchRate, &result.features.back())) {
+      result.error = "Failed to sample " + entry.path.filename().string();
+      return result;
+    }
     const float end = entry.end < 0.f ? animation.duration()
                                       : std::min(entry.end, animation.duration());
     ranges.push_back({entry.begin, end});

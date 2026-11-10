@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "common/pose_match.h"
+
 namespace ozz::animation {
 class Skeleton;
 }
@@ -63,6 +65,10 @@ struct PoseExits {
   }
 };
 
+// Frame rate of the per clip match features (CommonPoseResult::features),
+// for fine pose matching at runtime (see PoseWalk's best match blend).
+constexpr float kMatchRate = 30.f;
+
 // Shortest stay in a common pose that isn't a bounce (s).
 constexpr float kMinPoseStay = .2f;
 
@@ -72,6 +78,8 @@ struct CommonPoseResult {
   // Every clip's transitions in clip, then time order.
   std::vector<PoseTransition> transitions;
   std::vector<PoseExits> exits;  // Per pose, grouped from transitions.
+  // Per clip, pose features at kMatchRate (whole clip, trimming ignored).
+  std::vector<PoseFeatures> features;
   int num_frames = 0;
   double seconds = 0.;
   std::string error;
