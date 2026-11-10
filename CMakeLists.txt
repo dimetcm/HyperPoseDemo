@@ -73,13 +73,13 @@ add_executable(PoseBlend src/pose_blend.cpp)
 target_link_libraries(PoseBlend PRIVATE hyperpose_common)
 target_compile_definitions(PoseBlend PRIVATE HYPERPOSE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/Assets")
 
-# Common Poses: clusters the poses of a set of clips.
-add_executable(CommonPoses src/common_poses.cpp)
-target_link_libraries(CommonPoses PRIVATE hyperpose_common)
-target_compile_definitions(CommonPoses PRIVATE
+# Principal Poses Walk: clusters the poses of a set of clips and walks them.
+add_executable(PrincipalPosesWalk src/principal_poses_walk.cpp)
+target_link_libraries(PrincipalPosesWalk PRIVATE hyperpose_common)
+target_compile_definitions(PrincipalPosesWalk PRIVATE
   HYPERPOSE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/Assets"
   HYPERPOSE_PROJECTS_DIR="${CMAKE_SOURCE_DIR}/Projects")
-set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT CommonPoses)
+set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT PrincipalPosesWalk)
 
 # Asset pipeline: rescales/builds raw archives from fbx2ozz (see Tools/convert_fbx.py).
 add_executable(ozz_fixup Tools/ozz_fixup/main.cpp)

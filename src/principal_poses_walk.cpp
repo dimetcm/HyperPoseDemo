@@ -1,7 +1,8 @@
-// Common Poses: finds the most common poses in a set of clips. Every frame of
-// the selected clips is turned into a pose feature (root relative, heading
-// aligned joint positions), then grouped with k-means. Clusters are listed by
-// size; each shows its most typical frame, and its members can be browsed.
+// Principal Poses Walk: finds the most common poses in a set of clips, and
+// walks the transitions between them. Every frame of the selected clips is
+// turned into a pose feature (root relative, heading aligned joint positions),
+// then grouped with k-means. Clusters are listed by size; each shows its most
+// typical frame, and its members can be browsed.
 
 #include <algorithm>
 #include <chrono>
@@ -70,7 +71,7 @@ const char* kRateLabels[] = {"5 Hz", "10 Hz", "15 Hz"};
 
 }  // namespace
 
-class CommonPosesApplication : public ozz::sample::Application {
+class PrincipalPosesWalkApplication : public ozz::sample::Application {
  protected:
   bool OnInitialize() override {
     if (!library_.Scan(OPTIONS_root.value(), OPTIONS_metadata.value())) {
@@ -1613,5 +1614,5 @@ class CommonPosesApplication : public ozz::sample::Application {
 };
 
 int main(int _argc, const char** _argv) {
-  return CommonPosesApplication().Run(_argc, _argv, "0.1", "Common Poses");
+  return PrincipalPosesWalkApplication().Run(_argc, _argv, "0.1", "Principal Poses Walk");
 }

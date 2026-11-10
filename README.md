@@ -4,7 +4,7 @@ Experiments in pose matching and motion blending, built on
 [ozz-animation](https://github.com/guillaumeblanc/ozz-animation) and
 [Dear ImGui](https://github.com/ocornut/imgui).
 
-The main app, **CommonPoses**, finds the most common poses in a set of motion
+The main app, **PrincipalPosesWalk**, finds the most common poses in a set of motion
 capture clips and builds a transition graph between them. A character can then
 walk that graph, blending from clip to clip.
 
@@ -12,7 +12,7 @@ walk that graph, blending from clip to clip.
 
 | App (source) | What it does |
 |---|---|
-| **CommonPoses** (`src/common_poses.cpp`) | Clusters every frame of a set of clips into common poses (k-means on root relative, heading aligned joint positions), then builds the transitions between them. Browse poses and their frames, inspect the transition graph, and run a *pose walk*: a random walk over the graph, crossfading between clip segments. Optional root motion, and a *best match* blend that places each blend at the closest pair of frames (joint positions and velocities) near the transition. Pose sets, per clip trimming and settings are saved as `.hpproject` files. |
+| **PrincipalPosesWalk** (`src/principal_poses_walk.cpp`) | Clusters every frame of a set of clips into common poses (k-means on root relative, heading aligned joint positions), then builds the transitions between them. Browse poses and their frames, inspect the transition graph, and run a *pose walk*: a random walk over the graph, crossfading between clip segments. Optional root motion, and a *best match* blend that places each blend at the closest pair of frames (joint positions and velocities) near the transition. Pose sets, per clip trimming and settings are saved as `.hpproject` files. |
 | **PoseBlend** (`src/pose_blend.cpp`) | Compares every frame of clip A with every frame of clip B (pose difference heat map), finds the best transition and plays A blending into B. |
 | **AnimPreview** (`src/preview.cpp`) | Browses a folder tree of `.ozz` animations and plays them, optionally on a skinned character (retargeted) or as a point field. |
 
@@ -74,8 +74,8 @@ No animation data or meshes are included. The apps expect them under
 Then run, for example:
 
 ```sh
-build/Release/CommonPoses.exe
-build/Release/CommonPoses.exe --project=path/to/set.hpproject --walk --root_motion
+build/Release/PrincipalPosesWalk.exe
+build/Release/PrincipalPosesWalk.exe --project=path/to/set.hpproject --walk --root_motion
 ```
 
 Command line options are listed with `--help`.
