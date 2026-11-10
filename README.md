@@ -10,12 +10,11 @@ walk that graph, blending from clip to clip.
 
 ## Apps
 
-| App | What it does |
+| App (source) | What it does |
 |---|---|
-| **CommonPoses** | Clusters every frame of a set of clips into common poses (k-means on root relative, heading aligned joint positions), then builds the transitions between them. Browse poses and their frames, inspect the transition graph, and run a *pose walk*: a random walk over the graph, crossfading between clip segments. Optional root motion, and a *best match* blend that places each blend at the closest pair of frames (joint positions and velocities) near the transition. Pose sets, per clip trimming and settings are saved as `.hpproject` files. |
-| **PoseBlend** | Compares every frame of clip A with every frame of clip B (pose difference heat map), finds the best transition and plays A blending into B. |
-| **AnimPreview** | Browses a folder tree of `.ozz` animations and plays them, optionally on a skinned character (retargeted) or as a point field. |
-| **HyperPoseDemo** | Minimal playback sample. |
+| **CommonPoses** (`src/common_poses.cpp`) | Clusters every frame of a set of clips into common poses (k-means on root relative, heading aligned joint positions), then builds the transitions between them. Browse poses and their frames, inspect the transition graph, and run a *pose walk*: a random walk over the graph, crossfading between clip segments. Optional root motion, and a *best match* blend that places each blend at the closest pair of frames (joint positions and velocities) near the transition. Pose sets, per clip trimming and settings are saved as `.hpproject` files. |
+| **PoseBlend** (`src/pose_blend.cpp`) | Compares every frame of clip A with every frame of clip B (pose difference heat map), finds the best transition and plays A blending into B. |
+| **AnimPreview** (`src/preview.cpp`) | Browses a folder tree of `.ozz` animations and plays them, optionally on a skinned character (retargeted) or as a point field. |
 
 Tools:
 
