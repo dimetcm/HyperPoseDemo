@@ -9,6 +9,8 @@ capture clips and builds a transition graph between them. A character can then
 walk that graph, blending from clip to clip. See the
 [detailed description](docs/principal_poses_walk.md).
 
+![PrincipalPosesWalk: the pose set and common poses on the left, the gallery of all common poses behind the walking character, and the transition graph on the right](docs/images/principal_poses_walk.png)
+
 ## Apps
 
 | App (source) | What it does |
