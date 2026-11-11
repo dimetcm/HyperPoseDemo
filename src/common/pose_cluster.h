@@ -10,15 +10,17 @@ namespace hyperpose {
 
 struct PoseCluster {
   int medoid = -1;          // Sample closest to the cluster center.
-  float spread = 0.f;       // RMS joint distance of members to the center (m).
+  float spread = 0.f;       // RMS of member distances to the center (m).
   std::vector<int> members; // Sample indices, closest to the center first.
-  std::vector<float> distances;  // Per member: RMS joint distance to the center (m).
+  std::vector<float> distances;  // Per member: per joint distance to the center (m).
 };
 
 // Clusters samples into _k clusters with k-means (k-means++ seeding).
-// _data holds _num_samples * _num_joints * 3 floats: per sample, joint
-// positions (x, y, z). Returns non-empty clusters, largest first.
-std::vector<PoseCluster> ClusterPoses(const std::vector<float>& _data,
+// _data holds _dim floats per sample: joint positions (x, y, z), possibly
+// followed by more per joint values (weighted velocities). Distances are
+// reported per joint: the root of the squared distance over _num_joints.
+// Returns non-empty clusters, largest first.
+std::vector<PoseCluster> ClusterPoses(const std::vector<float>& _data, int _dim,
                                       int _num_joints, int _k, uint32_t _seed,
                                       int _max_iterations = 50);
 

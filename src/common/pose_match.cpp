@@ -83,37 +83,55 @@ bool ExtractPoseFeatures(const ozz::animation::Animation& _animation,
   ozz::vector<math::Float4x4> models(_skeleton.num_joints());
   ozz::animation::SamplingJob::Context context(_skeleton.num_joints());
 
-  for (int frame = 0; frame < f.num_frames; ++frame) {
-    const float time = std::min(frame / _frame_rate, duration);
-    if (!SamplePose(_animation, _skeleton, duration > 0.f ? time / duration : 0.f,
+  // Samples the pose at _time into _positions (num_joints): relative to the
+  // whole root position, height included, so clips whose root sits at a
+  // different height (vertical offset) still compare, and heading aligned.
+  auto sample = [&](float _time, math::Float3* _positions, math::Float3* _root,
+                    float* _heading) {
+    if (!SamplePose(_animation, _skeleton, duration > 0.f ? _time / duration : 0.f,
                     &context, make_span(locals), make_span(models))) {
       return false;
     }
     math::Float3 root;
     math::Store3PtrU(models[0].cols[3], &root.x);
     const float heading = RootHeading(models[0], axis);
-    f.root_positions[frame] = root;
-    f.root_headings[frame] = heading;
-
-    // Relative to the whole root position, height included: clips whose
-    // root sits at a different height (vertical offset) still compare.
     for (int j = 0; j < f.num_joints; ++j) {
       math::Float3 p;
       math::Store3PtrU(models[j].cols[3], &p.x);
-      f.positions[frame * f.num_joints + j] = RotateY(p - root, -heading);
+      _positions[j] = RotateY(p - root, -heading);
     }
-  }
+    if (_root) {
+      *_root = root;
+      *_heading = heading;
+    }
+    return true;
+  };
 
-  // Central differences (one sided at the ends).
+  // Velocities from two extra samples kVelocityStep around each frame,
+  // rather than from the neighbor frames: as precise at the clip ends as in
+  // the middle (one sided there, but over a short step), and independent of
+  // the frame rate.
+  const float kVelocityStep = 1.f / 60.f;
+  ozz::vector<math::Float3> before(f.num_joints), after(f.num_joints);
   for (int frame = 0; frame < f.num_frames; ++frame) {
-    const int prev = std::max(frame - 1, 0);
-    const int next = std::min(frame + 1, f.num_frames - 1);
-    const float dt = next > prev ? (next - prev) / _frame_rate : 1.f;
+    const float time = std::min(frame / _frame_rate, duration);
+    if (!sample(time, &f.positions[frame * f.num_joints], &f.root_positions[frame],
+                &f.root_headings[frame])) {
+      return false;
+    }
+    const float t0 = std::max(time - kVelocityStep, 0.f);
+    const float t1 = std::min(time + kVelocityStep, duration);
+    math::Float3* velocities = &f.velocities[frame * f.num_joints];
+    if (t1 <= t0) {  // A single frame clip.
+      std::fill(velocities, velocities + f.num_joints, math::Float3::zero());
+      continue;
+    }
+    if (!sample(t0, before.data(), nullptr, nullptr) ||
+        !sample(t1, after.data(), nullptr, nullptr)) {
+      return false;
+    }
     for (int j = 0; j < f.num_joints; ++j) {
-      f.velocities[frame * f.num_joints + j] =
-          (f.positions[next * f.num_joints + j] -
-           f.positions[prev * f.num_joints + j]) *
-          (1.f / dt);
+      velocities[j] = (after[j] - before[j]) * (1.f / (t1 - t0));
     }
   }
   return true;

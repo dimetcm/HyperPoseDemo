@@ -373,7 +373,8 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     status_.clear();
     clustered_project_ = CurrentProject();
     job_ = std::async(std::launch::async, hyperpose::FindCommonPoses, set_, &skeleton(),
-                      kRates[rate_], k_, static_cast<uint32_t>(seed_));
+                      kRates[rate_], k_, static_cast<uint32_t>(seed_),
+                      velocity_weight_);
   }
 
   // How a walk segment was reached, other than by a transition.
@@ -441,6 +442,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     project.clusters = k_;
     project.rate = kRates[rate_];
     project.seed = seed_;
+    project.velocity_weight = velocity_weight_;
     return project;
   }
 
@@ -456,6 +458,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     k_ = 12;
     rate_ = 1;
     seed_ = 1;
+    velocity_weight_ = hyperpose::PoseProject().velocity_weight;
     project_path_.clear();
     saved_project_ = CurrentProject();
   }
@@ -494,6 +497,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       }
     }
     seed_ = project.seed;
+    velocity_weight_ = std::max(0.f, project.velocity_weight);
     project_path_ = _path;
     saved_project_ = missing ? project : CurrentProject();
     hyperpose::SetRecentPoseProject(_path);
@@ -780,6 +784,14 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     ImGui::SetItemTooltip("Frames sampled per second of animation.");
     ImGui::SetNextItemWidth(half);
     ImGui::InputInt("Seed", &seed_);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(half * .5f);
+    ImGui::SliderFloat("Velocity", &velocity_weight_, 0.f, .5f, "%.2fs");
+    ImGui::SetItemTooltip(
+        "Weight of joint velocities against positions (seconds): a velocity\n"
+        "difference of 1 m/s counts as this many meters of position\n"
+        "difference, so the same pose moving in opposite directions can split\n"
+        "into different common poses. 0: positions only.");
     ImGui::BeginDisabled(set_.empty());
     if (ImGui::Button("Find common poses")) {
       StartClustering();
@@ -1577,6 +1589,8 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   int k_ = 12;
   int rate_ = 1;  // kRates index.
   int seed_ = 1;
+  // Joint velocities against positions (seconds, 0: positions only).
+  float velocity_weight_ = hyperpose::PoseProject().velocity_weight;
   std::future<hyperpose::CommonPoseResult> job_;
   hyperpose::CommonPoseResult result_;
   int pose_ = -1;   // Selected common pose.

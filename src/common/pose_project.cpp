@@ -37,7 +37,8 @@ bool SavePoseProject(const fs::path& _path, const PoseProject& _project,
          << "version " << kVersion << "\n"
          << "clusters " << _project.clusters << "\n"
          << "rate " << _project.rate << "\n"
-         << "seed " << _project.seed << "\n";
+         << "seed " << _project.seed << "\n"
+         << "velocity_weight " << _project.velocity_weight << "\n";
     for (const PoseProject::Clip& clip : _project.clips) {
       file << "clip " << clip.begin << " " << clip.end << " "
            << clip.path.generic_string() << "\n";
@@ -91,6 +92,8 @@ bool LoadPoseProject(const fs::path& _path, PoseProject* _project,
       ok = static_cast<bool>(in >> project.rate);
     } else if (key == "seed") {
       ok = static_cast<bool>(in >> project.seed);
+    } else if (key == "velocity_weight") {
+      ok = static_cast<bool>(in >> project.velocity_weight);
     } else if (key == "clip") {
       PoseProject::Clip clip;
       ok = static_cast<bool>(in >> clip.begin >> clip.end);

@@ -1,8 +1,8 @@
 #pragma once
 
 // Common poses of a set of clips: every frame of the clips is turned into a
-// pose feature (root relative, heading aligned joint positions), then grouped
-// with k-means (see pose_cluster.h).
+// pose feature (root relative, heading aligned joint positions, plus weighted
+// joint velocities), then grouped with k-means (see pose_cluster.h).
 
 #include <cstdint>
 #include <filesystem>
@@ -31,7 +31,8 @@ struct CommonPose {
   struct Frame {
     int clip;        // Index in CommonPoseResult::clips.
     float time;      // Seconds.
-    float distance;  // RMS joint distance to the cluster center (m).
+    float distance;  // Per joint distance to the cluster center (m, see
+                     // FindCommonPoses).
   };
   std::vector<Frame> frames;
   float spread = 0.f;  // RMS of frame distances (m).
@@ -90,9 +91,14 @@ struct CommonPoseResult {
 float EnteredAt(const CommonPoseResult& _result, int _transition);
 
 // Samples every entry at _rate (frames per second), and clusters the poses in
-// _k common poses. Only reads its arguments, so it can run on a worker thread.
+// _k common poses. Poses are compared by joint positions plus, when
+// _velocity_weight (seconds) > 0, joint velocities times _velocity_weight, so
+// the same pose moving in opposite directions can split; distances are the
+// root of the mean per joint squared difference. Only reads its arguments, so
+// it can run on a worker thread.
 CommonPoseResult FindCommonPoses(std::vector<PoseSetEntry> _entries,
                                  const ozz::animation::Skeleton* _skeleton,
-                                 float _rate, int _k, uint32_t _seed);
+                                 float _rate, int _k, uint32_t _seed,
+                                 float _velocity_weight);
 
 }  // namespace hyperpose

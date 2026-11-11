@@ -9,6 +9,7 @@
 //   clusters 12
 //   rate 10
 //   seed 1
+//   velocity_weight 0.1
 //   clip <begin> <end> <path>
 //
 // Clip paths are relative to the clip root (absolute if outside it), with
@@ -33,10 +34,12 @@ struct PoseProject {
   int clusters = 12;
   float rate = 10.f;  // Frames sampled per second.
   int seed = 1;
+  // Joint velocities against positions when clustering (seconds, 0: off).
+  float velocity_weight = .1f;
 
   bool operator==(const PoseProject& _o) const {
     return clips == _o.clips && clusters == _o.clusters && rate == _o.rate &&
-           seed == _o.seed;
+           seed == _o.seed && velocity_weight == _o.velocity_weight;
   }
   bool operator!=(const PoseProject& _o) const { return !(*this == _o); }
 };

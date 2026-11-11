@@ -22,10 +22,10 @@ float Distance2(const float* _a, const float* _b, int _dim) {
 
 }  // namespace
 
-std::vector<PoseCluster> ClusterPoses(const std::vector<float>& _data,
+std::vector<PoseCluster> ClusterPoses(const std::vector<float>& _data, int _dim,
                                       int _num_joints, int _k, uint32_t _seed,
                                       int _max_iterations) {
-  const int dim = _num_joints * 3;
+  const int dim = _dim;
   const int n = dim > 0 ? static_cast<int>(_data.size() / dim) : 0;
   const int k = std::min(_k, n);
   if (k <= 0) {
@@ -115,7 +115,7 @@ std::vector<PoseCluster> ClusterPoses(const std::vector<float>& _data,
       cluster.distances.push_back(
           std::sqrt(distances[i] / std::max(_num_joints, 1)));
     }
-    // Per joint RMS distance to the center.
+    // RMS of the members' per joint distances to the center.
     cluster.spread = static_cast<float>(
         std::sqrt(sum / cluster.members.size() / std::max(_num_joints, 1)));
   }
