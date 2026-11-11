@@ -112,8 +112,8 @@ CommonPoseResult FindCommonPoses(std::vector<PoseSetEntry> _entries,
                                  float _velocity_weight) {
   const auto start = std::chrono::steady_clock::now();
   CommonPoseResult result;
-  std::vector<Sample> samples;
-  std::vector<float> data;
+  std::vector<Sample> samples;  // Clip and time of each pose.
+  PoseSamples poses;            // Pose features of each sample.
   std::vector<std::pair<float, float>> ranges;  // Per clip, sampled.
   ozz::animation::Animation animation;
   PoseFeatures features;
@@ -140,25 +140,12 @@ CommonPoseResult FindCommonPoses(std::vector<PoseSetEntry> _entries,
         continue;
       }
       samples.push_back({static_cast<int>(e), time});
-      const ozz::math::Float3* p = &features.positions[frame * features.num_joints];
-      for (int j = 0; j < features.num_joints; ++j) {
-        data.insert(data.end(), {p[j].x, p[j].y, p[j].z});
-      }
-      if (_velocity_weight > 0.f) {
-        // Velocities scaled to meters: poses moving apart differ.
-        const ozz::math::Float3* v = &features.velocities[frame * features.num_joints];
-        for (int j = 0; j < features.num_joints; ++j) {
-          const ozz::math::Float3 w = v[j] * _velocity_weight;
-          data.insert(data.end(), {w.x, w.y, w.z});
-        }
-      }
+      poses.Add(features, frame);
     }
   }
   result.num_frames = static_cast<int>(samples.size());
   std::vector<int> labels(samples.size(), -1);  // Pose of each sample.
-  for (const PoseCluster& cluster :
-       ClusterPoses(data, _skeleton->num_joints() * (_velocity_weight > 0.f ? 6 : 3),
-                    _skeleton->num_joints(), _k, _seed)) {
+  for (const PoseCluster& cluster : ClusterPoses(poses, _velocity_weight, _k, _seed)) {
     CommonPose pose;
     pose.spread = cluster.spread;
     pose.frames.reserve(cluster.members.size());
