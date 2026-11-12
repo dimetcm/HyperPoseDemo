@@ -15,6 +15,13 @@
 
 namespace hyperpose {
 
+constexpr const char* kSkeletonFileName = "skeleton.ozz";
+constexpr const char* kMeshFileName = "mesh.ozz";
+
+// Finds the nearest skeleton.ozz, from the clip folder up to _root.
+std::filesystem::path FindClipSkeleton(const std::filesystem::path& _clip,
+                                       const std::filesystem::path& _root);
+
 // The skeleton clips are played on: the nearest skeleton.ozz of a clip (see
 // FindClipSkeleton), loaded once and kept while clips share it.
 class ClipSkeleton {

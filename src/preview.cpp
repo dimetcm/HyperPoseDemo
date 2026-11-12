@@ -10,11 +10,11 @@
 
 #include <imgui.h>
 
-#include "common/anim_utils.h"
-#include "common/character_view.h"
-#include "common/clip_library.h"
-#include "common/clip_player.h"
-#include "common/point_field.h"
+#include "common/core/anim_utils.h"
+#include "common/gui/character_view.h"
+#include "common/gui/clip_library.h"
+#include "common/core/clip_player.h"
+#include "common/core/point_field.h"
 #include "framework/application.h"
 #include "framework/imgui.h"
 #include "framework/renderer.h"

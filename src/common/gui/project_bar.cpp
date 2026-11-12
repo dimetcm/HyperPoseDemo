@@ -1,4 +1,4 @@
-#include "common/project_bar.h"
+#include "common/gui/project_bar.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -6,7 +6,7 @@
 
 #include <imgui.h>
 
-#include "common/pose_project.h"
+#include "common/core/pose_project.h"
 
 namespace fs = std::filesystem;
 

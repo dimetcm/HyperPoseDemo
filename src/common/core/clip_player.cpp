@@ -1,16 +1,28 @@
-#include "common/clip_player.h"
+#include "common/core/clip_player.h"
 
 #include <algorithm>
 #include <cmath>
 
-#include "common/clip_library.h"
-#include "common/pose_match.h"
+#include "common/core/pose_match.h"
 #include "framework/utils.h"
 #include "ozz/animation/runtime/local_to_model_job.h"
 
 namespace fs = std::filesystem;
 
 namespace hyperpose {
+
+fs::path FindClipSkeleton(const fs::path& _clip, const fs::path& _root) {
+  for (fs::path dir = _clip.parent_path(); !dir.empty();
+       dir = dir.parent_path()) {
+    if (fs::exists(dir / kSkeletonFileName)) {
+      return dir / kSkeletonFileName;
+    }
+    if (dir == _root || dir == dir.parent_path()) {
+      break;
+    }
+  }
+  return {};
+}
 
 ClipSkeleton::Result ClipSkeleton::Use(const fs::path& _clip,
                                        const fs::path& _root,

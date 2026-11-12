@@ -1,11 +1,11 @@
-#include "common/clip_preview.h"
+#include "common/gui/clip_preview.h"
 
 #include <algorithm>
 #include <cfloat>
 
 #include <imgui.h>
 
-#include "common/pose_match.h"
+#include "common/core/pose_match.h"
 #include "ozz/animation/runtime/animation.h"
 #include "ozz/base/containers/vector.h"
 

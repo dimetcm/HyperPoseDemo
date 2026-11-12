@@ -20,7 +20,7 @@
 #include <string>
 #include <vector>
 
-#include "common/common_pose.h"
+#include "common/core/common_pose.h"
 
 namespace hyperpose {
 

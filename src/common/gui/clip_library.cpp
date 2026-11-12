@@ -1,10 +1,10 @@
-#include "common/clip_library.h"
+#include "common/gui/clip_library.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
 
-#include "common/anim_utils.h"
+#include "common/core/anim_utils.h"
 
 namespace fs = std::filesystem;
 
@@ -49,19 +49,6 @@ std::unordered_map<std::string, std::string> LoadDescriptions(
 }
 
 }  // namespace
-
-fs::path FindClipSkeleton(const fs::path& _clip, const fs::path& _root) {
-  for (fs::path dir = _clip.parent_path(); !dir.empty();
-       dir = dir.parent_path()) {
-    if (fs::exists(dir / kSkeletonFileName)) {
-      return dir / kSkeletonFileName;
-    }
-    if (dir == _root || dir == dir.parent_path()) {
-      break;
-    }
-  }
-  return {};
-}
 
 bool ClipLibrary::Scan(const fs::path& _root, const fs::path& _descriptions_csv) {
   root_ = _root;

@@ -1,4 +1,4 @@
-#include "common/common_pose.h"
+#include "common/core/common_pose.h"
 
 #include <algorithm>
 #include <chrono>
@@ -7,9 +7,9 @@
 #include <map>
 #include <utility>
 
-#include "common/anim_utils.h"
-#include "common/pose_cluster.h"
-#include "common/pose_match.h"
+#include "common/core/anim_utils.h"
+#include "common/core/pose_cluster.h"
+#include "common/core/pose_match.h"
 #include "framework/utils.h"
 #include "ozz/animation/runtime/animation.h"
 #include "ozz/animation/runtime/skeleton.h"

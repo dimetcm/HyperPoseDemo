@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-#include "common/retarget.h"
+#include "common/core/retarget.h"
 #include "framework/mesh.h"
 #include "ozz/animation/runtime/skeleton.h"
 #include "ozz/base/containers/vector.h"

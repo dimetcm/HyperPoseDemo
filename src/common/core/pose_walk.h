@@ -10,8 +10,8 @@
 #include <memory>
 #include <random>
 
-#include "common/clip_player.h"
-#include "common/common_pose.h"
+#include "common/core/clip_player.h"
+#include "common/core/common_pose.h"
 #include "ozz/base/containers/vector.h"
 #include "ozz/base/maths/simd_math.h"
 #include "ozz/base/maths/soa_transform.h"

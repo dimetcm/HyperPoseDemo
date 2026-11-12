@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-#include "common/pose_match.h"
+#include "common/core/pose_match.h"
 
 namespace ozz::animation {
 class Skeleton;

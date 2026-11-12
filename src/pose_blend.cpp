@@ -12,10 +12,10 @@
 
 #include <imgui.h>
 
-#include "common/character_view.h"
-#include "common/clip_library.h"
-#include "common/clip_player.h"
-#include "common/pose_match.h"
+#include "common/gui/character_view.h"
+#include "common/gui/clip_library.h"
+#include "common/core/clip_player.h"
+#include "common/core/pose_match.h"
 #include "framework/application.h"
 #include "framework/imgui.h"
 #include "framework/renderer.h"

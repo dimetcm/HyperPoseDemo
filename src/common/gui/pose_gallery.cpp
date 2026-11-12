@@ -1,10 +1,10 @@
-#include "common/pose_gallery.h"
+#include "common/gui/pose_gallery.h"
 
 #include <algorithm>
 #include <cmath>
 
-#include "common/character_view.h"
-#include "common/pose_match.h"
+#include "common/gui/character_view.h"
+#include "common/core/pose_match.h"
 #include "framework/renderer.h"
 #include "framework/utils.h"
 #include "ozz/animation/runtime/skeleton.h"

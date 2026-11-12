@@ -1,10 +1,10 @@
-#include "common/pose_match.h"
+#include "common/core/pose_match.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 
-#include "common/anim_utils.h"
+#include "common/core/anim_utils.h"
 #include "ozz/animation/runtime/animation.h"
 #include "ozz/animation/runtime/local_to_model_job.h"
 #include "ozz/animation/runtime/sampling_job.h"

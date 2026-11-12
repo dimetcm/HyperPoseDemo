@@ -34,54 +34,59 @@ endif()
 
 add_subdirectory(external/ozz_framework)
 
-# Code shared by the apps: animation helpers and retargeting.
-add_library(hyperpose_common STATIC
-  src/common/anim_utils.h
-  src/common/anim_utils.cpp
-  src/common/retarget.h
-  src/common/retarget.cpp
-  src/common/point_field.h
-  src/common/point_field.cpp
-  src/common/pose_match.h
-  src/common/pose_match.cpp
-  src/common/pose_cluster.h
-  src/common/pose_cluster.cpp
-  src/common/clip_library.h
-  src/common/clip_library.cpp
-  src/common/clip_player.h
-  src/common/clip_player.cpp
-  src/common/common_pose.h
-  src/common/common_pose.cpp
-  src/common/pose_gallery.h
-  src/common/pose_gallery.cpp
-  src/common/pose_walk.h
-  src/common/pose_walk.cpp
-  src/common/pose_project.h
-  src/common/pose_project.cpp
-  src/common/transition_graph.h
-  src/common/transition_graph.cpp
-  src/common/project_bar.h
-  src/common/project_bar.cpp
-  src/common/clip_preview.h
-  src/common/clip_preview.cpp
-  src/common/character_view.h
-  src/common/character_view.cpp)
-target_include_directories(hyperpose_common PUBLIC src)
-target_link_libraries(hyperpose_common PUBLIC sample_framework)
+# Shared core: animation helpers, retargeting, pose matching and clustering,
+# the pose walk and projects (no UI).
+add_library(hyperpose_core STATIC
+  src/common/core/anim_utils.h
+  src/common/core/anim_utils.cpp
+  src/common/core/retarget.h
+  src/common/core/retarget.cpp
+  src/common/core/point_field.h
+  src/common/core/point_field.cpp
+  src/common/core/pose_match.h
+  src/common/core/pose_match.cpp
+  src/common/core/pose_cluster.h
+  src/common/core/pose_cluster.cpp
+  src/common/core/clip_player.h
+  src/common/core/clip_player.cpp
+  src/common/core/common_pose.h
+  src/common/core/common_pose.cpp
+  src/common/core/pose_walk.h
+  src/common/core/pose_walk.cpp
+  src/common/core/pose_project.h
+  src/common/core/pose_project.cpp)
+target_include_directories(hyperpose_core PUBLIC src)
+target_link_libraries(hyperpose_core PUBLIC sample_framework)
+
+# Shared UI and drawing (Dear ImGui, the framework renderer), on top of core.
+add_library(hyperpose_gui STATIC
+  src/common/gui/clip_library.h
+  src/common/gui/clip_library.cpp
+  src/common/gui/character_view.h
+  src/common/gui/character_view.cpp
+  src/common/gui/pose_gallery.h
+  src/common/gui/pose_gallery.cpp
+  src/common/gui/clip_preview.h
+  src/common/gui/clip_preview.cpp
+  src/common/gui/transition_graph.h
+  src/common/gui/transition_graph.cpp
+  src/common/gui/project_bar.h
+  src/common/gui/project_bar.cpp)
+target_link_libraries(hyperpose_gui PUBLIC hyperpose_core)
 
 # Animation browser/preview.
 add_executable(AnimPreview src/preview.cpp)
-target_link_libraries(AnimPreview PRIVATE hyperpose_common)
+target_link_libraries(AnimPreview PRIVATE hyperpose_gui)
 target_compile_definitions(AnimPreview PRIVATE HYPERPOSE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/Assets")
 
 # Minimal Pose Difference Blend: best transition between two clips.
 add_executable(PoseBlend src/pose_blend.cpp)
-target_link_libraries(PoseBlend PRIVATE hyperpose_common)
+target_link_libraries(PoseBlend PRIVATE hyperpose_gui)
 target_compile_definitions(PoseBlend PRIVATE HYPERPOSE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/Assets")
 
 # Principal Poses Walk: clusters the poses of a set of clips and walks them.
 add_executable(PrincipalPosesWalk src/principal_poses_walk.cpp)
-target_link_libraries(PrincipalPosesWalk PRIVATE hyperpose_common)
+target_link_libraries(PrincipalPosesWalk PRIVATE hyperpose_gui)
 target_compile_definitions(PrincipalPosesWalk PRIVATE
   HYPERPOSE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/Assets"
   HYPERPOSE_PROJECTS_DIR="${CMAKE_SOURCE_DIR}/Projects")
@@ -91,11 +96,11 @@ set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT PrincipalPosesWalk)
 add_executable(ozz_fixup Tools/ozz_fixup/main.cpp)
 target_link_libraries(ozz_fixup PRIVATE ozz_animation_offline ozz_animation ozz_options ozz_base)
 
-# Point field generation (see src/common/point_field.h).
+# Point field generation (see src/common/core/point_field.h).
 add_executable(pointfield_gen Tools/pointfield_gen/main.cpp)
-target_link_libraries(pointfield_gen PRIVATE hyperpose_common)
+target_link_libraries(pointfield_gen PRIVATE hyperpose_core)
 add_executable(pointfield_stats Tools/pointfield_stats/main.cpp)
-target_link_libraries(pointfield_stats PRIVATE hyperpose_common)
+target_link_libraries(pointfield_stats PRIVATE hyperpose_core)
 
 # fbx2mesh (copied from ozz samples, patched): extracts skinned meshes to the
 # framework's mesh.ozz format.

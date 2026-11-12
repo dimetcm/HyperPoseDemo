@@ -1,4 +1,4 @@
-#include "common/pose_cluster.h"
+#include "common/core/pose_cluster.h"
 
 #include <algorithm>
 #include <cmath>
@@ -7,7 +7,7 @@
 #include <numeric>
 #include <random>
 
-#include "common/pose_match.h"
+#include "common/core/pose_match.h"
 
 namespace math = ozz::math;
 

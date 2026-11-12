@@ -4,8 +4,8 @@
 // root motion and playback limited to the trim range of its pose set entry,
 // and its playback and trim controls (Dear ImGui).
 
-#include "common/clip_player.h"
-#include "common/common_pose.h"
+#include "common/core/clip_player.h"
+#include "common/core/common_pose.h"
 #include "ozz/base/maths/simd_math.h"
 #include "ozz/base/span.h"
 

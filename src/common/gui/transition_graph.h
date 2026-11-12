@@ -7,7 +7,7 @@
 // "end" arrows pointing out of the circle. Nodes without a drawn arrow are
 // dimmed.
 
-#include "common/common_pose.h"
+#include "common/core/common_pose.h"
 
 namespace hyperpose {
 

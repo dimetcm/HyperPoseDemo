@@ -1,12 +1,13 @@
-#include "common/character_view.h"
+#include "common/gui/character_view.h"
 
 #include <algorithm>
 #include <cstdio>
 
 #include <imgui.h>
 
-#include "common/anim_utils.h"
-#include "common/clip_library.h"
+#include "common/core/anim_utils.h"
+#include "common/gui/clip_library.h"
+#include "common/core/clip_player.h"
 #include "framework/renderer.h"
 #include "framework/utils.h"
 #include "ozz/geometry/runtime/skinning_job.h"

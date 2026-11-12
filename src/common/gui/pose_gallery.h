@@ -11,8 +11,8 @@
 #include <string>
 #include <vector>
 
-#include "common/clip_player.h"
-#include "common/common_pose.h"
+#include "common/core/clip_player.h"
+#include "common/core/common_pose.h"
 #include "framework/mesh.h"
 #include "ozz/base/containers/vector.h"
 #include "ozz/base/maths/box.h"

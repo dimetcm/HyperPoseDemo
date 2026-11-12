@@ -8,7 +8,7 @@
 #include <cstring>
 #include <fstream>
 
-#include "common/point_field.h"
+#include "common/core/point_field.h"
 
 using hyperpose::PointFieldGenerator;
 using hyperpose::PointFieldHeader;

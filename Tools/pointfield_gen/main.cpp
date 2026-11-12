@@ -17,9 +17,9 @@
 #include <filesystem>
 #include <fstream>
 
-#include "common/anim_utils.h"
-#include "common/point_field.h"
-#include "common/retarget.h"
+#include "common/core/anim_utils.h"
+#include "common/core/point_field.h"
+#include "common/core/retarget.h"
 #include "framework/mesh.h"
 #include "framework/utils.h"
 #include "ozz/animation/runtime/animation.h"

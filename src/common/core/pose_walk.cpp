@@ -1,11 +1,11 @@
-#include "common/pose_walk.h"
+#include "common/core/pose_walk.h"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <vector>
 
-#include "common/pose_match.h"
+#include "common/core/pose_match.h"
 #include "ozz/animation/runtime/blending_job.h"
 #include "ozz/animation/runtime/local_to_model_job.h"
 #include "ozz/animation/runtime/skeleton.h"

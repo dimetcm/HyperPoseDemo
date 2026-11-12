@@ -1,4 +1,4 @@
-#include "common/point_field.h"
+#include "common/core/point_field.h"
 
 #include <algorithm>
 #include <array>
@@ -9,7 +9,7 @@
 #include <random>
 #include <unordered_map>
 
-#include "common/anim_utils.h"
+#include "common/core/anim_utils.h"
 #include "framework/mesh.h"
 #include "ozz/geometry/runtime/skinning_job.h"
 

@@ -1,4 +1,4 @@
-#include "common/transition_graph.h"
+#include "common/gui/transition_graph.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -9,7 +9,7 @@
 
 #include <imgui.h>
 
-#include "common/clip_library.h"
+#include "common/gui/clip_library.h"
 
 namespace hyperpose {
 
