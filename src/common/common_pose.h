@@ -4,6 +4,7 @@
 // pose feature (root relative, heading aligned joint positions, plus weighted
 // joint velocities), then grouped with k-means (see pose_cluster.h).
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -23,6 +24,18 @@ struct PoseSetEntry {
   float duration = 0.f;  // Of the whole clip (s), read when it's added.
   float begin = 0.f;
   float end = -1.f;  // Negative: clip end.
+
+  // End of the range used (s): the clip end when end < 0.
+  float trim_end() const { return end < 0.f ? duration : std::min(end, duration); }
+  // True if only part of the clip is used.
+  bool trimmed() const { return begin > 0.f || trim_end() < duration; }
+  // Sets the range used, clamped to the clip (an end at the clip end is
+  // stored as -1).
+  void SetTrim(float _begin, float _end) {
+    begin = std::clamp(_begin, 0.f, duration);
+    _end = std::clamp(_end, begin, duration);
+    end = _end >= duration - 1e-3f ? -1.f : _end;
+  }
 
   // Same clip and range (the duration comes from the clip).
   bool operator==(const PoseSetEntry& _o) const {
@@ -116,6 +129,11 @@ struct CommonPoseResult {
 // When the clip entered the transition's `from` pose (s): the previous
 // transition's time (the transition's own for an entry).
 float EnteredAt(const CommonPoseResult& _result, int _transition);
+
+// Labels for UI and logs: "#3" for pose 2, or "end" for -1 (a clip end).
+std::string PoseName(int _pose);
+// The first _max edges out of a pose with their shares: " #3 60% end 20%".
+std::string PoseExitsText(const PoseExits& _exits, size_t _max);
 
 // Samples every entry at its own frame rate, and clusters every stride-th
 // frame (1: every frame) in common poses (see CommonPoseSettings). Poses are

@@ -58,6 +58,12 @@ add_library(hyperpose_common STATIC
   src/common/pose_walk.cpp
   src/common/pose_project.h
   src/common/pose_project.cpp
+  src/common/transition_graph.h
+  src/common/transition_graph.cpp
+  src/common/project_bar.h
+  src/common/project_bar.cpp
+  src/common/clip_preview.h
+  src/common/clip_preview.cpp
   src/common/character_view.h
   src/common/character_view.cpp)
 target_include_directories(hyperpose_common PUBLIC src)

@@ -19,10 +19,13 @@
 #include "common/character_view.h"
 #include "common/clip_library.h"
 #include "common/clip_player.h"
+#include "common/clip_preview.h"
 #include "common/common_pose.h"
 #include "common/pose_gallery.h"
 #include "common/pose_project.h"
 #include "common/pose_walk.h"
+#include "common/project_bar.h"
+#include "common/transition_graph.h"
 #include "common/pose_match.h"
 #include "framework/application.h"
 #include "framework/imgui.h"
@@ -112,7 +115,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       if (!gallery_.Build(result_, &skeleton(), clip_skeleton_.heading_axis())) {
         status_ = gallery_.error();
       }
-      if (previewing_) {
+      if (preview_.active) {
         // Selects the first pose without interrupting the preview.
         pose_ = result_.poses.empty() ? -1 : 0;
         frame_ = 0;
@@ -125,7 +128,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
         walk_on_result_ = false;
       }
     }
-    if (previewing_) {
+    if (preview_.active) {
       UpdatePreview(_dt);
     }
     if (walk_.active()) {
@@ -148,11 +151,11 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
         const hyperpose::PoseWalk::Segment& segment = walk_.segment();
         AddLabel(math::Float4x4::identity(), make_span(models_),
                  SegmentPrefix(segment) + ("#" + std::to_string(segment.from + 1)) +
-                     " -> " + PoseName(segment.to) + "\n",
+                     " -> " + hyperpose::PoseName(segment.to) + "\n",
                  result_.clips[segment.clip], walk_.clip_time(), walk_.clip_duration());
       } else {
-        AddLabel(math::Float4x4::identity(), make_span(models_), "", clip_.path(),
-                 clip_.time, clip_.duration());
+        AddLabel(math::Float4x4::identity(), make_span(models_), "", preview_.clip.path(),
+                 preview_.clip.time, preview_.clip.duration());
       }
     }
     // Every common pose, in rows behind the displayed pose.
@@ -177,8 +180,8 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
         return result_.features[c].frame_rate;
       }
     }
-    if (clip_.loaded() && clip_.path() == _clip) {
-      return hyperpose::AnimationFrameRate(clip_.animation());
+    if (preview_.clip.loaded() && preview_.clip.path() == _clip) {
+      return hyperpose::AnimationFrameRate(preview_.clip.animation());
     }
     return 30.f;
   }
@@ -313,8 +316,8 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       in_set.push_back(entry.path);
     }
     std::vector<fs::path> highlighted;
-    if (previewing_) {
-      highlighted.push_back(clip_.path());
+    if (preview_.active) {
+      highlighted.push_back(preview_.clip.path());
     }
     fs::path clicked, toggled;
     library_.DrawTable(highlighted, &clicked, &in_set, &toggled);
@@ -335,7 +338,10 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     ClustersGui();
     ImGui::EndChild();
     ImGui::End();
-    TransitionGraphWindow();
+    const int graph_pose = graph_.Draw(result_, pose_, library_);
+    if (graph_pose >= 0) {
+      SelectPose(graph_pose);
+    }
     DrawLabels();
     return true;
   }
@@ -361,20 +367,6 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     return it == project_.clips.end() ? nullptr : &*it;
   }
 
-  // Trim range of an entry: the part of the clip used (end < 0: clip end).
-  static float TrimEnd(const PoseSetEntry& _entry) {
-    return _entry.end < 0.f ? _entry.duration : std::min(_entry.end, _entry.duration);
-  }
-  static bool Trimmed(const PoseSetEntry& _entry) {
-    return _entry.begin > 0.f || TrimEnd(_entry) < _entry.duration;
-  }
-  static void SetTrim(PoseSetEntry* _entry, float _begin, float _end) {
-    const float duration = _entry->duration;
-    _entry->begin = std::clamp(_begin, 0.f, duration);
-    _end = std::clamp(_end, _entry->begin, duration);
-    _entry->end = _end >= duration - 1e-3f ? -1.f : _end;  // Clip end.
-  }
-
   // Starts clustering the pose set on a worker thread.
   void StartClustering() {
     if (project_.clips.empty() || job_.valid()) {
@@ -389,24 +381,6 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   // How a walk segment was reached, other than by a transition.
   static const char* SegmentPrefix(const hyperpose::PoseWalk::Segment& _segment) {
     return _segment.jump ? "jump " : _segment.after_end ? "after end " : "";
-  }
-
-  // "#3", or "end" for -1 (a clip end).
-  static std::string PoseName(int _pose) {
-    return _pose < 0 ? "end" : "#" + std::to_string(_pose + 1);
-  }
-
-  // The first _max edges out of a pose with their shares: " #3 60% end 20%".
-  static std::string ExitsText(const hyperpose::PoseExits& _exits, size_t _max) {
-    std::string text;
-    for (size_t e = 0; e < std::min(_exits.edges.size(), _max); ++e) {
-      const hyperpose::PoseEdge& edge = _exits.edges[e];
-      char item[32];
-      std::snprintf(item, sizeof(item), " %s %.0f%%", PoseName(edge.to).c_str(),
-                    _exits.share(edge) * 100.f);
-      text += item;
-    }
-    return text;
   }
 
   void LogResult() const {
@@ -447,7 +421,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       ozz::log::Out() << line << std::endl;
       // Top transitions.
       const hyperpose::PoseExits& exits = result_.exits[c];
-      ozz::log::Out() << "      ->" << ExitsText(exits, 4) << "  (" << exits.count
+      ozz::log::Out() << "      ->" << hyperpose::PoseExitsText(exits, 4) << "  (" << exits.count
                       << " transitions)" << std::endl;
     }
   }
@@ -518,128 +492,24 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     return true;
   }
 
-  // Project name (* when changed) and New / Open / Save / Save as. Changes
-  // are confirmed before New or Open drop them.
+  // Project bar: carries out what it asks for.
   void ProjectGui() {
-    const bool dirty = ProjectDirty();
-    ImGui::AlignTextToFramePadding();
-    ImGui::Text("Project: %s%s", ProjectName().c_str(), dirty ? "*" : "");
-    if (!project_path_.empty()) {
-      ImGui::SetItemTooltip("%s", project_path_.string().c_str());
+    const hyperpose::ProjectBar::Action action =
+        project_bar_.Draw(projects_dir_, project_path_, ProjectDirty(), job_.valid());
+    switch (action.type) {
+      case hyperpose::ProjectBar::Action::kNew:
+        NewProject();
+        status_.clear();
+        break;
+      case hyperpose::ProjectBar::Action::kOpen:
+        OpenProject(action.path);
+        break;
+      case hyperpose::ProjectBar::Action::kSave:
+        SaveProject(action.path);
+        break;
+      case hyperpose::ProjectBar::Action::kNone:
+        break;
     }
-    ImGui::BeginDisabled(job_.valid());
-    const float right = ImGui::GetContentRegionMax().x;
-    const ImGuiStyle& style = ImGui::GetStyle();
-    const float buttons = ImGui::CalcTextSize("NewOpen...SaveSave as...").x +
-                          style.FramePadding.x * 8.f + style.ItemSpacing.x * 3.f;
-    ImGui::SameLine(std::max(ImGui::GetCursorPosX(), right - buttons));
-    bool open_save_as = false;
-    if (ImGui::Button("New")) {
-      pending_open_.clear();
-      pending_new_ = true;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Open...")) {
-      project_list_ = hyperpose::ListPoseProjects(projects_dir_);
-      ImGui::OpenPopup("Open project");
-    }
-    ImGui::SameLine();
-    const bool save = ImGui::Button("Save") ||
-                      ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal);
-    if (save) {
-      if (project_path_.empty()) {
-        open_save_as = true;
-      } else {
-        SaveProject(project_path_);
-      }
-    }
-    ImGui::SetItemTooltip("Ctrl+S");
-    ImGui::SameLine();
-    if (ImGui::Button("Save as...")) {
-      open_save_as = true;
-    }
-    ImGui::EndDisabled();
-
-    // Open: projects of the projects folder, most recent first.
-    if (ImGui::BeginPopup("Open project")) {
-      ImGui::TextDisabled("%s", projects_dir_.string().c_str());
-      if (project_list_.empty()) {
-        ImGui::TextUnformatted("No projects yet: Save as... to make one.");
-      }
-      for (const fs::path& path : project_list_) {
-        if (ImGui::Selectable(path.stem().string().c_str(), path == project_path_)) {
-          pending_open_ = path;
-        }
-      }
-      ImGui::EndPopup();
-    }
-
-    // Save as: a name in the projects folder.
-    if (open_save_as) {
-      const std::string name = project_path_.empty() ? "" : ProjectName();
-      std::snprintf(save_name_, sizeof(save_name_), "%s", name.c_str());
-      ImGui::OpenPopup("Save project as");
-    }
-    if (ImGui::BeginPopupModal("Save project as", nullptr,
-                               ImGuiWindowFlags_AlwaysAutoResize)) {
-      if (ImGui::IsWindowAppearing()) {
-        ImGui::SetKeyboardFocusHere();
-      }
-      const bool enter = ImGui::InputText("Name", save_name_, sizeof(save_name_),
-                                          ImGuiInputTextFlags_EnterReturnsTrue);
-      const fs::path path = projects_dir_ / (std::string(save_name_) + hyperpose::kProjectExtension);
-      std::error_code ec;
-      const bool valid = save_name_[0] && fs::path(save_name_).filename() == fs::path(save_name_);
-      if (valid && fs::exists(path, ec) && path != project_path_) {
-        ImGui::TextColored(ImVec4(1.f, .7f, .3f, 1.f), "Replaces the existing %s.", save_name_);
-      }
-      ImGui::BeginDisabled(!valid);
-      if (ImGui::Button("Save") || (enter && valid)) {
-        SaveProject(path);
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::EndDisabled();
-      ImGui::SameLine();
-      if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::EndPopup();
-    }
-
-    // New / Open, confirmed when that drops changes.
-    if (pending_new_ || !pending_open_.empty()) {
-      if (!dirty) {
-        ApplyPending();
-      } else if (!ImGui::IsPopupOpen("Discard changes?")) {
-        ImGui::OpenPopup("Discard changes?");
-      }
-    }
-    if (ImGui::BeginPopupModal("Discard changes?", nullptr,
-                               ImGuiWindowFlags_AlwaysAutoResize)) {
-      ImGui::Text("%s has unsaved changes.", ProjectName().c_str());
-      if (ImGui::Button("Discard")) {
-        ApplyPending();
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::SameLine();
-      if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-        pending_new_ = false;
-        pending_open_.clear();
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::EndPopup();
-    }
-  }
-
-  void ApplyPending() {
-    if (pending_new_) {
-      NewProject();
-      status_.clear();
-    } else if (!pending_open_.empty()) {
-      OpenProject(pending_open_);
-    }
-    pending_new_ = false;
-    pending_open_.clear();
   }
 
   // Adds a clip to the pose set, or removes it if already in. All clips must
@@ -687,8 +557,8 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       result_ = hyperpose::CommonPoseResult();
       gallery_.Clear();
       pose_ = -1;
-      previewing_ = false;
-      clip_.Unload();
+      preview_.active = false;
+      preview_.clip.Unload();
       pose_valid_ = false;
     }
     return true;
@@ -701,7 +571,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   void PoseSetGui() {
     float total = 0.f;  // Of the trimmed clips.
     for (const PoseSetEntry& entry : project_.clips) {
-      total += TrimEnd(entry) - entry.begin;
+      total += entry.trim_end() - entry.begin;
     }
     char header[96];
     std::snprintf(header, sizeof(header), "Pose set: %d clips, %.0fs###set",
@@ -741,9 +611,9 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
         ImGui::SameLine();
         const std::string name = project_.clips[i].path.stem().string();
         char label[128];
-        if (Trimmed(project_.clips[i])) {
+        if (project_.clips[i].trimmed()) {
           std::snprintf(label, sizeof(label), "%s  %.1f-%.1fs of %.1fs", name.c_str(),
-                        project_.clips[i].begin, TrimEnd(project_.clips[i]), project_.clips[i].duration);
+                        project_.clips[i].begin, project_.clips[i].trim_end(), project_.clips[i].duration);
         } else {
           std::snprintf(label, sizeof(label), "%s  %.1fs", name.c_str(), project_.clips[i].duration);
         }
@@ -898,207 +768,9 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     ImGui::Checkbox("Debug text", &debug_text_);
     ImGui::SetItemTooltip("Clip, time / duration and frame above each character.");
     ImGui::SameLine();
-    ImGui::Checkbox("Transition graph", &show_transitions_);
+    ImGui::Checkbox("Transition graph", &graph_.open);
     ImGui::SetItemTooltip("Window with the common poses and the transitions between them.");
     ImGui::Separator();
-  }
-
-  // Transition graph: a node per common pose around a circle, largest first
-  // at the top, clockwise, sized by share. Arrows out of (orange) and into
-  // (blue) the selected pose, thicker for more frequent; with "All poses",
-  // the other poses' transitions too, grey. Clip ends are short "end" arrows
-  // pointing out of the circle. Nodes without a drawn arrow are dimmed.
-  // Click a node to select it.
-  void TransitionGraphWindow() {
-    if (!show_transitions_ || result_.poses.empty()) {
-      return;
-    }
-    const ImGuiIO& io = ImGui::GetIO();
-    const float dpi = ImGui::GetStyle().FontScaleDpi;
-    ImGui::SetNextWindowSize(ImVec2(360.f * dpi, 400.f * dpi), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowPos(
-        ImVec2(io.DisplaySize.x - 370.f * dpi, io.DisplaySize.y - 410.f * dpi),
-        ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Pose transitions", &show_transitions_)) {
-      ImGui::End();
-      return;
-    }
-    ImGui::Checkbox("All poses", &all_transitions_);
-    ImGui::SetItemTooltip("Also the other poses' transitions, in grey.");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    ImGui::SliderFloat("##min_share", &min_transition_share_, 0.f, .5f,
-                       "hide below %.2f share");
-    if (pose_ >= 0) {
-      ImGui::TextColored(ImVec4(1.f, .67f, .24f, 1.f), "out of #%d", pose_ + 1);
-      ImGui::SameLine();
-      ImGui::TextColored(ImVec4(.35f, .67f, 1.f, 1.f), "into #%d", pose_ + 1);
-      ImGui::SameLine();
-      ImGui::TextDisabled("(%% of source's)");
-      ImGui::SetItemTooltip("Arrow shares are of the source pose's transitions.");
-    }
-
-    // Canvas.
-    const ImVec2 origin = ImGui::GetCursorScreenPos();
-    const ImVec2 avail = ImGui::GetContentRegionAvail();
-    const ImVec2 size(std::max(avail.x, 60.f), std::max(avail.y, 60.f));
-    ImGui::InvisibleButton("graph", size);
-    const bool hovered_canvas = ImGui::IsItemHovered();
-    const bool clicked = ImGui::IsItemClicked();
-    ImDrawList* draw_list = ImGui::GetWindowDrawList();
-    draw_list->PushClipRect(origin, ImVec2(origin.x + size.x, origin.y + size.y), true);
-
-    // Nodes.
-    const int count = static_cast<int>(result_.poses.size());
-    const float max_radius = 24.f * dpi;
-    const float min_radius = 9.f * dpi;
-    const ImVec2 center(origin.x + size.x * .5f, origin.y + size.y * .5f);
-    // Room outside the circle for dead end arrows and their labels.
-    const float kEndLength = 14.f * dpi;
-    const float ring = std::max(
-        10.f, std::min(size.x, size.y) * .5f - max_radius - kEndLength - 24.f * dpi);
-    const float largest = static_cast<float>(result_.poses.front().frames.size());
-    std::vector<ImVec2> positions(count);
-    std::vector<float> radii(count);
-    int hovered = -1;
-    for (int p = 0; p < count; ++p) {
-      const float angle = -1.5707963f + 6.2831853f * p / count;
-      positions[p] = ImVec2(center.x + ring * std::cos(angle),
-                            center.y + ring * std::sin(angle));
-      radii[p] = min_radius + (max_radius - min_radius) *
-                                  std::sqrt(result_.poses[p].frames.size() / largest);
-      const float dx = io.MousePos.x - positions[p].x;
-      const float dy = io.MousePos.y - positions[p].y;
-      if (hovered_canvas && dx * dx + dy * dy <= radii[p] * radii[p]) {
-        hovered = p;
-      }
-    }
-
-    // Edges: curved to the right of the direction, so a->b and b->a don't
-    // overlap, with an arrow head on the target and the share at the middle.
-    // A dead end (_to -1, the clips end) is a short straight arrow out of the
-    // circle, labeled "end".
-    auto edge = [&](int _from, int _to, float _share, ImU32 _color, float _thickness,
-                    bool _label) {
-      auto toward = [](ImVec2 _p, ImVec2 _q, float _distance) {
-        const float x = _q.x - _p.x, y = _q.y - _p.y;
-        const float l = std::max(1e-3f, std::sqrt(x * x + y * y));
-        return ImVec2(_p.x + x / l * _distance, _p.y + y / l * _distance);
-      };
-      const ImVec2 a = positions[_from];
-      const ImVec2 b = _to >= 0 ? positions[_to]
-                                : toward(center, a, ring + radii[_from] + kEndLength);
-      const float dx = b.x - a.x, dy = b.y - a.y;
-      const float length = std::max(1.f, std::sqrt(dx * dx + dy * dy));
-      const float bend = _to >= 0 ? .15f : 0.f;
-      const ImVec2 control((a.x + b.x) * .5f - dy / length * length * bend,
-                           (a.y + b.y) * .5f + dx / length * length * bend);
-      const ImVec2 start = toward(a, control, radii[_from]);
-      const ImVec2 end = _to >= 0 ? toward(b, control, radii[_to] + 2.f) : b;
-      // Arrow head along the curve tangent at the end.
-      const float tx = end.x - control.x, ty = end.y - control.y;
-      const float tl = std::max(1e-3f, std::sqrt(tx * tx + ty * ty));
-      const ImVec2 dir(tx / tl, ty / tl);
-      const float head = (6.f + _thickness * 1.5f) * dpi;
-      const ImVec2 base(end.x - dir.x * head, end.y - dir.y * head);
-      draw_list->AddBezierQuadratic(start, control, base, _color, _thickness);
-      draw_list->AddTriangleFilled(
-          end, ImVec2(base.x - dir.y * head * .5f, base.y + dir.x * head * .5f),
-          ImVec2(base.x + dir.y * head * .5f, base.y - dir.x * head * .5f), _color);
-      if (_label) {
-        char text[16];
-        std::snprintf(text, sizeof(text), _to >= 0 ? "%.0f%%" : "end %.0f%%",
-                      _share * 100.f);
-        const ImVec2 text_size = ImGui::CalcTextSize(text);
-        // Past the arrow tip for a dead end, else mid curve.
-        const ImVec2 mid =
-            _to >= 0 ? ImVec2(.25f * start.x + .5f * control.x + .25f * base.x,
-                              .25f * start.y + .5f * control.y + .25f * base.y)
-                     : toward(end, ImVec2(2.f * end.x - start.x, 2.f * end.y - start.y),
-                              .5f * std::max(text_size.x, text_size.y) + 3.f * dpi);
-        const ImVec2 pos(mid.x - text_size.x * .5f, mid.y - text_size.y * .5f);
-        draw_list->AddRectFilled(ImVec2(pos.x - 2.f, pos.y),
-                                 ImVec2(pos.x + text_size.x + 2.f, pos.y + text_size.y),
-                                 IM_COL32(20, 20, 20, 200), 3.f);
-        draw_list->AddText(pos, _color, text);
-      }
-    };
-    // Grey: other poses' transitions (with "All poses"). Blue: into the
-    // selected pose, orange: out of it, drawn last to stay on top. Shares are
-    // of the source pose's transitions.
-    const ImU32 kOut = IM_COL32(255, 170, 60, 255);
-    const ImU32 kIn = IM_COL32(90, 170, 255, 255);
-    std::vector<bool> connected(count, false);  // Has a drawn arrow.
-    std::vector<bool> targets(count, false), sources(count, false);
-    for (int pass = 0; pass < 3; ++pass) {  // Others, in, out.
-      for (int p = 0; p < count; ++p) {
-        const hyperpose::PoseExits& exits = result_.exits[p];
-        for (const hyperpose::PoseEdge& e : exits.edges) {
-          const float share = exits.share(e);
-          const bool out = p == pose_;
-          const bool in = e.to >= 0 && e.to == pose_;
-          if (share < min_transition_share_ ||
-              (pass == 0 && (out || in || !all_transitions_)) ||
-              (pass == 1 && !in) || (pass == 2 && !out)) {
-            continue;
-          }
-          connected[p] = true;
-          if (e.to >= 0) {
-            connected[e.to] = true;
-          }
-          if (pass == 0) {
-            edge(p, e.to, share, IM_COL32(170, 170, 170, 170),
-                 (1.f + 4.f * share) * dpi, false);
-          } else {
-            if (e.to >= 0) {
-              (out ? targets[e.to] : sources[p]) = true;
-            }
-            edge(p, e.to, share, out ? kOut : kIn, (1.f + 7.f * share) * dpi, true);
-          }
-        }
-      }
-    }
-
-    // Nodes over the edges: selected orange, its targets / sources tinted,
-    // nodes without a drawn arrow dimmed.
-    for (int p = 0; p < count; ++p) {
-      const bool dim = !connected[p] && p != pose_;
-      const ImU32 fill = p == pose_     ? IM_COL32(230, 140, 40, 255)
-                         : targets[p] ? IM_COL32(120, 90, 50, 255)
-                         : sources[p] ? IM_COL32(50, 85, 125, 255)
-                         : dim        ? IM_COL32(40, 40, 40, 255)
-                                      : IM_COL32(75, 75, 75, 255);
-      draw_list->AddCircleFilled(positions[p], radii[p], fill);
-      draw_list->AddCircle(positions[p], radii[p],
-                           p == hovered ? IM_COL32(255, 255, 255, 255)
-                           : dim        ? IM_COL32(90, 90, 90, 255)
-                                        : IM_COL32(160, 160, 160, 255),
-                           0, p == hovered ? 2.f : 1.f);
-      char text[8];
-      std::snprintf(text, sizeof(text), "#%d", p + 1);
-      const ImVec2 text_size = ImGui::CalcTextSize(text);
-      draw_list->AddText(ImVec2(positions[p].x - text_size.x * .5f,
-                                positions[p].y - text_size.y * .5f),
-                         dim ? IM_COL32(120, 120, 120, 255) : IM_COL32(255, 255, 255, 255),
-                         text);
-    }
-    draw_list->PopClipRect();
-
-    if (hovered >= 0) {
-      const CommonPose& pose = result_.poses[hovered];
-      const CommonPose::Frame& frame = pose.frames.front();
-      const std::string name = result_.clips[frame.clip].stem().string();
-      const std::string next = ExitsText(result_.exits[hovered], 4);
-      ImGui::SetTooltip("#%d: %.1f%% of frames, spread %.1f cm\n%s @ %.1fs  %s\nnext:%s",
-                        hovered + 1, 100.f * pose.frames.size() / result_.num_frames,
-                        pose.spread * 100.f, name.c_str(), frame.time,
-                        library_.Description(name).c_str(),
-                        next.empty() ? " none" : next.c_str());
-      if (clicked) {
-        SelectPose(hovered);
-      }
-    }
-    ImGui::End();
   }
 
   // Transitions from the selected pose: where its clips go next (or end),
@@ -1143,7 +815,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         if (edge.to >= 0) {
-          if (ImGui::Selectable(PoseName(edge.to).c_str())) {
+          if (ImGui::Selectable(hyperpose::PoseName(edge.to).c_str())) {
             select = edge.to;
           }
           ImGui::SetItemTooltip("Select pose #%d.", edge.to + 1);
@@ -1191,7 +863,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
 
   // Shows a frame of the selected pose, still.
   void ShowFrame(int _frame) {
-    previewing_ = false;
+    preview_.active = false;
     walk_.Stop();
     const CommonPose::Frame& frame = result_.poses[pose_].frames[_frame];
     SampleClip(result_.clips[frame.clip], frame.time);
@@ -1201,7 +873,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   void PreviewClip(const fs::path& _clip) { StartPreview(_clip, 0.f); }
 
   // Clip being previewed (empty when showing a still frame).
-  fs::path PreviewedClip() const { return previewing_ ? clip_.path() : fs::path(); }
+  fs::path PreviewedClip() const { return preview_.active ? preview_.clip.path() : fs::path(); }
 
   // Re-samples the displayed pose (preview or selected frame). The walk
   // samples every update.
@@ -1209,8 +881,8 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     if (walk_.active()) {
       return;
     }
-    if (previewing_) {
-      SampleClip(clip_.path(), clip_.time);
+    if (preview_.active) {
+      SampleClip(preview_.clip.path(), preview_.clip.time);
     } else if (pose_ >= 0) {
       ShowFrame(frame_);
     }
@@ -1223,23 +895,23 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     }
     status_.clear();
     walk_.Stop();
-    previewing_ = false;
+    preview_.active = false;
     if (!SampleClip(_clip, _time)) {  // Loads the clip.
       return;
     }
-    previewing_ = true;
+    preview_.active = true;
     if (walk_.root_motion) {
       // Root motion from the origin.
       AnchorPreview(_time, true);
       SampleClip(_clip, _time);
     }
-    clip_.playing = true;
+    preview_.clip.playing = true;
   }
 
   // Pose walk: the main character walks the transition graph from the
   // selected pose (random if none), instead of the preview / still frame.
   void StartWalk() {
-    previewing_ = false;
+    preview_.active = false;
     if (!walk_.Start(&result_, &skeleton(), clip_skeleton_.heading_axis(), pose_)) {
       status_ = "Pose walk failed to start.";
       return;
@@ -1291,7 +963,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       const hyperpose::PoseWalk::Segment& segment = walk_.segment();
       ImGui::SameLine();
       ImGui::Text("%s#%d -> %s  %s @ %.1fs", SegmentPrefix(segment), segment.from + 1,
-                  PoseName(segment.to).c_str(),
+                  hyperpose::PoseName(segment.to).c_str(),
                   result_.clips[segment.clip].stem().string().c_str(), walk_.clip_time());
       if (segment.jump) {
         ImGui::SetItemTooltip("Nowhere to go from the last pose: jumped to #%d, a pose "
@@ -1359,8 +1031,8 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   void RootMotionGui() {
     if (ImGui::Checkbox("Root motion", &walk_.root_motion)) {
       // Continues from where the character stands.
-      if (previewing_ && walk_.root_motion) {
-        AnchorPreview(clip_.time, false);
+      if (preview_.active && walk_.root_motion) {
+        AnchorPreview(preview_.clip.time, false);
       }
       RefreshPose();
     }
@@ -1373,8 +1045,8 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       ImGui::SameLine();
       if (ImGui::SmallButton("Back to origin")) {
         walk_.ResetPosition();
-        if (previewing_) {
-          AnchorPreview(clip_.time, true);
+        if (preview_.active) {
+          AnchorPreview(preview_.clip.time, true);
           RefreshPose();
         }
       }
@@ -1385,176 +1057,57 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   // the origin facing the default heading (_origin), or where the character
   // root is (last pose).
   void AnchorPreview(float _time, bool _origin) {
-    ozz::vector<math::Float4x4> models(skeleton().num_joints());
-    if (!clip_.Sample(_time, make_span(models))) {
-      return;
-    }
-    const int axis = clip_skeleton_.heading_axis();
-    math::Float3 target = math::Float3::zero();
-    float target_heading = 0.f;
-    if (!_origin && pose_valid_) {
-      math::Store3PtrU(models_[0].cols[3], &target.x);
-      target_heading = hyperpose::RootHeading(models_[0], axis);
-    }
-    math::Float3 root;
-    math::Store3PtrU(models[0].cols[3], &root.x);
-    const float heading = hyperpose::RootHeading(models[0], axis);
-    auto yaw = [](float _angle) {
-      return math::Float4x4::FromAxisAngle(math::simd_float4::y_axis(),
-                                           math::simd_float4::Load1(_angle));
-    };
-    preview_anchor_ =
-        math::Float4x4::Translation(math::simd_float4::Load(target.x, 0.f, target.z, 1.f)) *
-        yaw(target_heading - heading) *
-        math::Float4x4::Translation(math::simd_float4::Load(-root.x, 0.f, -root.z, 1.f));
+    preview_.Anchor(_time, !_origin && pose_valid_ ? &models_[0] : nullptr,
+                    clip_skeleton_.heading_axis());
   }
 
-  bool PreviewRootMotion() const { return previewing_ && walk_.root_motion; }
+  bool PreviewRootMotion() const { return preview_.active && walk_.root_motion; }
 
   void UpdatePreview(float _dt) {
-    const bool playing = clip_.playing;
-    const float previous = clip_.time;
-    clip_.Advance(_dt);
-    // Plays the trim range only: wraps (or stops) at its ends.
-    const PoseSetEntry* entry = FindEntry(clip_.path());
-    if (playing && play_trim_ && entry && Trimmed(*entry)) {
-      const float begin = entry->begin, end = TrimEnd(*entry);
-      if (clip_.time > end || clip_.time < begin) {
-        if (clip_.loop) {
-          clip_.time = clip_.speed >= 0.f ? begin : end;
-        } else {
-          clip_.time = std::clamp(clip_.time, begin, end);
-          clip_.playing = false;
-        }
-      }
-    }
     // Wrapped around (loop or trim range): root motion continues from where
     // the character is.
-    const bool wrapped = clip_.speed >= 0.f ? clip_.time < previous : clip_.time > previous;
-    if (playing && wrapped && PreviewRootMotion()) {
-      AnchorPreview(clip_.time, false);
+    if (preview_.Advance(_dt, FindEntry(preview_.clip.path())) && PreviewRootMotion()) {
+      AnchorPreview(preview_.clip.time, false);
     }
-    SampleClip(clip_.path(), clip_.time);
+    SampleClip(preview_.clip.path(), preview_.clip.time);
   }
 
   void PreviewGui() {
-    if (!previewing_ ||
+    if (!preview_.active ||
         !ImGui::CollapsingHeader("Preview", ImGuiTreeNodeFlags_DefaultOpen)) {
       return;
     }
-    const std::string name = clip_.path().stem().string();
+    const std::string name = preview_.clip.path().stem().string();
     ImGui::Text("%s  %s", name.c_str(), library_.Description(name).c_str());
-    const float duration = clip_.duration();
-    PoseSetEntry* entry = FindEntry(clip_.path());
-    const bool trim_range = play_trim_ && entry && Trimmed(*entry);
-    if (ImGui::Button(clip_.playing ? "Pause" : "Play",
-                      ImVec2(ImGui::GetFontSize() * 4.f, 0.f))) {
-      const float end = trim_range ? TrimEnd(*entry) : duration;
-      if (!clip_.playing && !clip_.loop && clip_.time >= end) {
-        clip_.time = trim_range ? entry->begin : 0.f;  // Replays from the start.
-      }
-      clip_.playing = !clip_.playing;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Close")) {
-      previewing_ = false;
+    const hyperpose::ClipPreview::GuiResult result =
+        preview_.Gui(FindEntry(preview_.clip.path()), job_.valid());
+    if (result.close) {
+      preview_.active = false;
       pose_valid_ = false;
       RefreshPose();  // Back to the selected frame, if any.
       return;
     }
-    ImGui::SameLine();
-    ImGui::Checkbox("Loop", &clip_.loop);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    ImGui::SliderFloat("##speed", &clip_.speed, -2.f, 2.f, "speed %.2fx");
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    if (ImGui::SliderFloat("##time", &clip_.time, 0.f, duration, "%.2fs")) {
-      clip_.playing = false;
+    if (result.add_to_set) {
+      Add(preview_.clip.path());
     }
-    if (entry && Trimmed(*entry) && duration > 0.f) {
-      // Trimmed out parts shaded on the time slider.
-      const ImVec2 min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
-      auto x = [&](float _t) { return min.x + (max.x - min.x) * _t / duration; };
-      ImDrawList* draw_list = ImGui::GetWindowDrawList();
-      const ImU32 shade = IM_COL32(0, 0, 0, 150);
-      draw_list->AddRectFilled(min, ImVec2(x(entry->begin), max.y), shade);
-      draw_list->AddRectFilled(ImVec2(x(TrimEnd(*entry)), min.y), max, shade);
-      const ImU32 mark = IM_COL32(255, 170, 60, 255);
-      draw_list->AddLine(ImVec2(x(entry->begin), min.y), ImVec2(x(entry->begin), max.y), mark, 2.f);
-      draw_list->AddLine(ImVec2(x(TrimEnd(*entry)), min.y), ImVec2(x(TrimEnd(*entry)), max.y),
-                         mark, 2.f);
-    }
-    TrimGui(entry);
     RootMotionGui();
     ImGui::Separator();
-  }
-
-  // Trim range of the previewed clip, for this project: the part of the clip
-  // used for the common poses. The clip file isn't changed.
-  void TrimGui(PoseSetEntry* _entry) {
-    const bool running = job_.valid();
-    if (!_entry) {
-      ImGui::BeginDisabled(running);
-      if (ImGui::SmallButton("Add to pose set")) {
-        Add(clip_.path());
-      }
-      ImGui::EndDisabled();
-      ImGui::SameLine();
-      ImGui::TextDisabled("to trim it.");
-      return;
-    }
-    ImGui::BeginDisabled(running);
-    float begin = _entry->begin, end = TrimEnd(*_entry);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Trim");
-    ImGui::SetItemTooltip(
-        "Part of the clip used for the common poses, saved with the project.\n"
-        "The clip file isn't changed.");
-    ImGui::SameLine();
-    const float buttons = ImGui::CalcTextSize("[ now] nowReset").x +
-                          ImGui::GetStyle().FramePadding.x * 6.f +
-                          ImGui::GetStyle().ItemSpacing.x * 3.f;
-    ImGui::SetNextItemWidth(std::max(80.f, ImGui::GetContentRegionAvail().x - buttons));
-    if (ImGui::DragFloatRange2("##trim", &begin, &end, .01f, 0.f, _entry->duration,
-                               "begin %.2fs", "end %.2fs", ImGuiSliderFlags_AlwaysClamp)) {
-      SetTrim(_entry, begin, end);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("[ now")) {
-      SetTrim(_entry, clip_.time, std::max(end, clip_.time));
-    }
-    ImGui::SetItemTooltip("Begin at the current time.");
-    ImGui::SameLine();
-    if (ImGui::Button("] now")) {
-      SetTrim(_entry, std::min(begin, clip_.time), clip_.time);
-    }
-    ImGui::SetItemTooltip("End at the current time.");
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!Trimmed(*_entry));
-    if (ImGui::Button("Reset")) {
-      SetTrim(_entry, 0.f, _entry->duration);
-    }
-    ImGui::EndDisabled();
-    ImGui::EndDisabled();
-    ImGui::Checkbox("Play trim range only", &play_trim_);
   }
 
   // Samples _clip at _time into models_: placed by the preview anchor with
   // root motion, else aligned to the origin if enabled.
   bool SampleClip(const fs::path& _clip, float _time) {
     pose_valid_ = false;
-    if (_clip != clip_.path() && !clip_.Load(_clip, skeleton())) {
+    if (_clip != preview_.clip.path() && !preview_.clip.Load(_clip, skeleton())) {
       status_ = "Failed to load " + _clip.filename().string();
       return false;
     }
-    clip_.time = _time;
-    if (!clip_.Sample(make_span(models_))) {
+    preview_.clip.time = _time;
+    if (!preview_.clip.Sample(make_span(models_))) {
       return false;
     }
     if (PreviewRootMotion()) {
-      for (math::Float4x4& model : models_) {
-        model = preview_anchor_ * model;
-      }
+      preview_.ApplyAnchor(make_span(models_));
     } else if (align_to_origin_) {
       hyperpose::AlignToOrigin(make_span(models_), clip_skeleton_.heading_axis());
     }
@@ -1575,12 +1128,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   fs::path projects_dir_;
   fs::path project_path_;  // Empty: untitled.
   hyperpose::PoseProject saved_project_;
-  std::vector<fs::path> project_list_;  // Open popup.
-  char save_name_[128] = {};
-  bool pending_new_ = false;
-  fs::path pending_open_;
-  // Preview plays only the trim range of a set clip.
-  bool play_trim_ = true;
+  hyperpose::ProjectBar project_bar_;
   // Set and settings the common poses were found for, to flag stale ones.
   hyperpose::PoseProject clustered_project_;
   hyperpose::ClipSkeleton clip_skeleton_;
@@ -1599,13 +1147,10 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
 
   // Displayed pose: a clip preview (playing), or a still frame of the
   // selected common pose.
-  hyperpose::ClipPlayer clip_;
-  bool previewing_ = false;
+  hyperpose::ClipPreview preview_;  // Its clip also shows still frames.
   bool align_to_origin_ = true;
   bool pose_valid_ = false;
   ozz::vector<math::Float4x4> models_;
-  // Preview root motion: places the clip (see AnchorPreview).
-  math::Float4x4 preview_anchor_ = math::Float4x4::identity();
 
   // Debug labels of this frame (screen position, text).
   struct Label {
@@ -1614,11 +1159,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   };
   std::vector<Label> labels_;
   bool debug_text_ = true;
-  // Transition graph window: arrows rarer than the share are hidden; all
-  // poses' transitions, or only the selected pose's.
-  bool show_transitions_ = true;
-  bool all_transitions_ = true;
-  float min_transition_share_ = .05f;
+  hyperpose::TransitionGraph graph_;  // Transition graph window.
   std::vector<int> transition_example_;  // Per edge: next transition to play.
 };
 

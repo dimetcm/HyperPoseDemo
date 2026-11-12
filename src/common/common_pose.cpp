@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <map>
 #include <utility>
 
@@ -106,6 +107,22 @@ CommonPoseSettings CommonPoseSettings::Clamped() const {
   settings.stride = std::clamp(stride, 1, kMaxStride);
   settings.velocity_weight = std::max(velocity_weight, 0.f);
   return settings;
+}
+
+std::string PoseName(int _pose) {
+  return _pose < 0 ? "end" : "#" + std::to_string(_pose + 1);
+}
+
+std::string PoseExitsText(const PoseExits& _exits, size_t _max) {
+  std::string text;
+  for (size_t e = 0; e < std::min(_exits.edges.size(), _max); ++e) {
+    const PoseEdge& edge = _exits.edges[e];
+    char item[32];
+    std::snprintf(item, sizeof(item), " %s %.0f%%", PoseName(edge.to).c_str(),
+                  _exits.share(edge) * 100.f);
+    text += item;
+  }
+  return text;
 }
 
 float EnteredAt(const CommonPoseResult& _result, int _transition) {
