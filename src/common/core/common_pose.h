@@ -145,4 +145,30 @@ CommonPoseResult FindCommonPoses(std::vector<PoseSetEntry> _entries,
                                  const ozz::animation::Skeleton* _skeleton,
                                  CommonPoseSettings _settings);
 
+// How well common poses found with a cluster count fit, to choose it.
+struct ClusterCountMeasure {
+  int clusters = 0;   // Poses found (fewer than asked if some were empty).
+  float rms = 0.f;    // RMS pose distance of the frames to their pose (m).
+  // Mean entropy of each pose's next pose shares, weighted by transitions
+  // (bits): lower, a more predictable transition graph.
+  float entropy = 0.f;
+  // Mean over frames of (b - a) / max(a, b), a: mean distance to the frame's
+  // own pose members, b: to the nearest other pose's (-1..1, higher: better
+  // separated). Only when asked: O(frames^2).
+  float silhouette = 0.f;
+};
+
+// Finds common poses for every cluster count in [_k_min, _k_max], other
+// settings from _settings, and measures them (the silhouette too when
+// _silhouette). Empty with _error set on failure. Can run on a worker thread.
+std::vector<ClusterCountMeasure> MeasureClusterCounts(
+    const std::vector<PoseSetEntry>& _entries, const ozz::animation::Skeleton* _skeleton,
+    const CommonPoseSettings& _settings, int _k_min, int _k_max, bool _silhouette,
+    std::string* _error);
+
+// The cluster count at the elbow of the rms curve: where adding clusters
+// stops paying off (the point farthest below the line between the curve's
+// ends, both axes normalized). 0 if _measures has fewer than 3 points.
+int ElbowClusterCount(const std::vector<ClusterCountMeasure>& _measures);
+
 }  // namespace hyperpose

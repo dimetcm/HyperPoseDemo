@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <map>
 #include <utility>
 
@@ -13,6 +14,8 @@
 #include "framework/utils.h"
 #include "ozz/animation/runtime/animation.h"
 #include "ozz/animation/runtime/skeleton.h"
+
+namespace math = ozz::math;
 
 namespace hyperpose {
 namespace {
@@ -190,6 +193,139 @@ CommonPoseResult FindCommonPoses(std::vector<PoseSetEntry> _entries,
                        std::chrono::steady_clock::now() - start)
                        .count();
   return result;
+}
+
+namespace {
+
+// Measures of one result (see ClusterCountMeasure).
+ClusterCountMeasure Measure(const CommonPoseResult& _result, float _velocity_weight,
+                            bool _silhouette) {
+  ClusterCountMeasure measure;
+  measure.clusters = static_cast<int>(_result.poses.size());
+
+  // Frames with their pose.
+  struct Frame {
+    int clip;
+    float time;
+    int pose;
+  };
+  std::vector<Frame> frames;
+  double sum_sqr = 0.;
+  for (size_t p = 0; p < _result.poses.size(); ++p) {
+    for (const CommonPose::Frame& frame : _result.poses[p].frames) {
+      frames.push_back({frame.clip, frame.time, static_cast<int>(p)});
+      sum_sqr += static_cast<double>(frame.distance) * frame.distance;
+    }
+  }
+  const int n = static_cast<int>(frames.size());
+  measure.rms = n ? static_cast<float>(std::sqrt(sum_sqr / n)) : 0.f;
+
+  double entropy = 0.;
+  int transitions = 0;
+  for (const PoseExits& exits : _result.exits) {
+    double h = 0.;
+    for (const PoseEdge& edge : exits.edges) {
+      const double share = exits.share(edge);
+      h -= share > 0. ? share * std::log2(share) : 0.;
+    }
+    entropy += h * exits.count;
+    transitions += exits.count;
+  }
+  measure.entropy = transitions ? static_cast<float>(entropy / transitions) : 0.f;
+
+  if (!_silhouette || n < 2) {
+    return measure;
+  }
+  const int poses = measure.clusters;
+  std::vector<int> counts(poses, 0);
+  for (const Frame& frame : frames) {
+    ++counts[frame.pose];
+  }
+  auto features_of = [&](const Frame& _frame, const math::Float3** _positions,
+                         const math::Float3** _velocities) {
+    const PoseFeatures& features = _result.features[_frame.clip];
+    const int index = std::clamp(static_cast<int>(std::lround(_frame.time * features.frame_rate)),
+                                 0, features.num_frames - 1);
+    const size_t first = static_cast<size_t>(index) * features.num_joints;
+    *_positions = &features.positions[first];
+    *_velocities = &features.velocities[first];
+    return features.num_joints;
+  };
+  std::vector<double> sums(poses);
+  double silhouette = 0.;
+  for (int i = 0; i < n; ++i) {
+    const math::Float3 *pi, *vi;
+    const int joints = features_of(frames[i], &pi, &vi);
+    std::fill(sums.begin(), sums.end(), 0.);
+    for (int j = 0; j < n; ++j) {
+      if (j == i) {
+        continue;
+      }
+      const math::Float3 *pj, *vj;
+      features_of(frames[j], &pj, &vj);
+      sums[frames[j].pose] +=
+          PoseRms(PoseDistanceSqr(pi, vi, pj, vj, joints, _velocity_weight), joints);
+    }
+    const int own = frames[i].pose;
+    if (counts[own] <= 1) {
+      continue;  // 0 for a single frame pose.
+    }
+    const double a = sums[own] / (counts[own] - 1);
+    double b = std::numeric_limits<double>::max();
+    for (int p = 0; p < poses; ++p) {
+      if (p != own && counts[p] > 0) {
+        b = std::min(b, sums[p] / counts[p]);
+      }
+    }
+    silhouette += (b - a) / std::max(a, b);
+  }
+  measure.silhouette = static_cast<float>(silhouette / n);
+  return measure;
+}
+
+}  // namespace
+
+std::vector<ClusterCountMeasure> MeasureClusterCounts(
+    const std::vector<PoseSetEntry>& _entries, const ozz::animation::Skeleton* _skeleton,
+    const CommonPoseSettings& _settings, int _k_min, int _k_max, bool _silhouette,
+    std::string* _error) {
+  std::vector<ClusterCountMeasure> measures;
+  const CommonPoseSettings base = _settings.Clamped();
+  _k_min = std::max(_k_min, CommonPoseSettings::kMinClusters);
+  _k_max = std::min(_k_max, CommonPoseSettings::kMaxClusters);
+  for (int k = _k_min; k <= _k_max; ++k) {
+    CommonPoseSettings settings = base;
+    settings.clusters = k;
+    const CommonPoseResult result = FindCommonPoses(_entries, _skeleton, settings);
+    if (!result.error.empty()) {
+      *_error = result.error;
+      return {};
+    }
+    measures.push_back(Measure(result, settings.velocity_weight, _silhouette));
+  }
+  return measures;
+}
+
+int ElbowClusterCount(const std::vector<ClusterCountMeasure>& _measures) {
+  if (_measures.size() < 3) {
+    return 0;
+  }
+  const ClusterCountMeasure& first = _measures.front();
+  const ClusterCountMeasure& last = _measures.back();
+  const float x_range = static_cast<float>(std::max(last.clusters - first.clusters, 1));
+  const float y_range = std::max(first.rms - last.rms, 1e-6f);
+  int elbow = first.clusters;
+  float best = -std::numeric_limits<float>::max();
+  for (const ClusterCountMeasure& measure : _measures) {
+    const float x = (measure.clusters - first.clusters) / x_range;
+    const float y = (measure.rms - last.rms) / y_range;
+    const float below = (1.f - x) - y;  // Below the straight line.
+    if (below > best) {
+      best = below;
+      elbow = measure.clusters;
+    }
+  }
+  return elbow;
 }
 
 }  // namespace hyperpose

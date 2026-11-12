@@ -60,6 +60,8 @@ OZZ_OPTIONS_DECLARE_STRING(
 OZZ_OPTIONS_DECLARE_BOOL(walk, "Starts the pose walk once common poses are found.",
                          false, false)
 OZZ_OPTIONS_DECLARE_BOOL(best_match, "Best match blend for the pose walk.", false, false)
+OZZ_OPTIONS_DECLARE_BOOL(best_k, "Finds the best cluster count once common poses are found.",
+                         false, false)
 
 namespace {
 
@@ -96,6 +98,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       StartClustering();
     }
     walk_on_result_ = OPTIONS_walk;
+    best_k_on_result_ = OPTIONS_best_k;
     walk_.root_motion = OPTIONS_root_motion;
     walk_.best_match = OPTIONS_best_match;
     if (OPTIONS_clip.value()[0]) {
@@ -105,6 +108,10 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   }
 
   bool OnUpdate(float _dt, float) override {
+    if (k_scan_.valid() &&
+        k_scan_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+      PickBestK();
+    }
     // Picks up the clustering result when the worker is done.
     if (job_.valid() &&
         job_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
@@ -123,7 +130,10 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       } else {
         SelectPose(result_.poses.empty() ? -1 : 0);
       }
-      if (walk_on_result_ && !result_.poses.empty()) {
+      if (best_k_on_result_) {
+        best_k_on_result_ = false;  // First result only.
+        StartKScan();
+      } else if (walk_on_result_ && !result_.poses.empty()) {
         StartWalk();  // First result only.
         walk_on_result_ = false;
       }
@@ -308,7 +318,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     // Clip tree first, with a fixed share of the panel, so the sections below
     // can't squeeze it out. Row click previews, checkbox adds to / removes
     // from the set.
-    const bool running = job_.valid();
+    const bool running = Busy();
     ImGui::BeginChild("browser", ImVec2(0.f, ImGui::GetContentRegionAvail().y * .4f),
                       ImGuiChildFlags_ResizeY);
     std::vector<fs::path> in_set;
@@ -369,13 +379,84 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
 
   // Starts clustering the pose set on a worker thread.
   void StartClustering() {
-    if (project_.clips.empty() || job_.valid()) {
+    if (project_.clips.empty() || Busy()) {
       return;
     }
     status_.clear();
     clustered_project_ = project_;
     job_ = std::async(std::launch::async, hyperpose::FindCommonPoses, project_.clips, &skeleton(),
                       project_.settings);
+  }
+
+  // A worker is running (clustering or the k scan): the set, settings and
+  // skeleton must not change.
+  bool Busy() const { return job_.valid() || k_scan_.valid(); }
+
+  // Starts scanning cluster counts on a worker thread (see PickBestK).
+  void StartKScan() {
+    if (project_.clips.empty() || Busy()) {
+      return;
+    }
+    status_.clear();
+    k_scan_ = std::async(std::launch::async, [clips = project_.clips, skeleton = &skeleton(),
+                                              settings = project_.settings]() {
+      KScan scan;
+      scan.measures = hyperpose::MeasureClusterCounts(
+          clips, skeleton, settings, hyperpose::CommonPoseSettings::kMinClusters,
+          hyperpose::CommonPoseSettings::kMaxClusters, false, &scan.error);
+      return scan;
+    });
+  }
+
+  // Takes the k scan result: clusters set to the elbow, common poses found.
+  void PickBestK() {
+    KScan scan = k_scan_.get();
+    k_measures_ = std::move(scan.measures);
+    best_k_ = hyperpose::ElbowClusterCount(k_measures_);
+    if (best_k_ <= 0) {
+      status_ = scan.error.empty() ? "Not enough cluster counts to choose from." : scan.error;
+      return;
+    }
+    project_.settings.clusters = best_k_;
+    ozz::log::Out() << "Best k: " << best_k_ << " (elbow of the RMS over k "
+                    << k_measures_.front().clusters << ".." << k_measures_.back().clusters
+                    << ")" << std::endl;
+    StartClustering();
+  }
+
+  // Curve of the last k scan: RMS pose distance over k, the chosen k marked.
+  void KScanGui() {
+    if (k_measures_.empty()) {
+      return;
+    }
+    std::vector<float> rms;
+    for (const hyperpose::ClusterCountMeasure& measure : k_measures_) {
+      rms.push_back(measure.rms * 100.f);
+    }
+    char overlay[64];
+    std::snprintf(overlay, sizeof(overlay), "RMS over k %d..%d, best k %d",
+                  k_measures_.front().clusters, k_measures_.back().clusters, best_k_);
+    ImGui::PlotLines("##k_scan", rms.data(), static_cast<int>(rms.size()), 0, overlay, 0.f,
+                     FLT_MAX, ImVec2(-FLT_MIN, ImGui::GetFrameHeight() * 2.5f));
+    // Marker at the chosen k.
+    const ImVec2 min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+    const int first = k_measures_.front().clusters, last = k_measures_.back().clusters;
+    if (last > first) {
+      const float x = min.x + (max.x - min.x) * (best_k_ - first) / (last - first);
+      ImGui::GetWindowDrawList()->AddLine(ImVec2(x, min.y), ImVec2(x, max.y),
+                                          IM_COL32(255, 170, 60, 255), 1.5f);
+    }
+    if (ImGui::IsItemHovered()) {
+      const float t = std::clamp((ImGui::GetIO().MousePos.x - min.x) / (max.x - min.x), 0.f, 1.f);
+      const size_t i = std::min(k_measures_.size() - 1,
+                                static_cast<size_t>(t * (k_measures_.size() - 1) + .5f));
+      const hyperpose::ClusterCountMeasure& m = k_measures_[i];
+      ImGui::SetTooltip(
+          "k %d: RMS %.1f cm, transition entropy %.2f bits\n"
+          "The elbow (orange) is where more clusters stop making the poses much\n"
+          "tighter. Lower entropy: a more predictable transition graph.",
+          m.clusters, m.rms * 100.f, m.entropy);
+    }
   }
 
   // How a walk segment was reached, other than by a transition.
@@ -443,7 +524,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   // that are missing or don't share the skeleton are left out (the project
   // then shows as changed).
   bool OpenProject(const fs::path& _path) {
-    if (job_.valid()) {
+    if (Busy()) {
       return false;
     }
     hyperpose::PoseProject project;
@@ -495,7 +576,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   // Project bar: carries out what it asks for.
   void ProjectGui() {
     const hyperpose::ProjectBar::Action action =
-        project_bar_.Draw(projects_dir_, project_path_, ProjectDirty(), job_.valid());
+        project_bar_.Draw(projects_dir_, project_path_, ProjectDirty(), Busy());
     switch (action.type) {
       case hyperpose::ProjectBar::Action::kNew:
         NewProject();
@@ -544,7 +625,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   // while the pose set is empty, as all set clips must share a skeleton.
   bool UseSkeleton(const fs::path& _clip) {
     const auto use = clip_skeleton_.Use(_clip, library_.root(),
-                                        project_.clips.empty() && !job_.valid());
+                                        project_.clips.empty() && !Busy());
     if (use == hyperpose::ClipSkeleton::Result::kFailed) {
       status_ = clip_skeleton_.error();
       return false;
@@ -637,7 +718,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     if (!ImGui::CollapsingHeader("Common poses", ImGuiTreeNodeFlags_DefaultOpen)) {
       return;
     }
-    const bool running = job_.valid();
+    const bool running = Busy();
     ImGui::BeginDisabled(running);
     const float half = ImGui::GetContentRegionAvail().x * .35f;
     ImGui::SetNextItemWidth(half);
@@ -666,12 +747,22 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     if (ImGui::Button("Find common poses")) {
       StartClustering();
     }
+    ImGui::SameLine();
+    if (ImGui::Button("Find best k")) {
+      StartKScan();
+    }
+    ImGui::SetItemTooltip(
+        "Finds common poses for every cluster count (%d to %d) and sets Clusters\n"
+        "to the elbow of the RMS pose distance curve: where more clusters stop\n"
+        "making the poses much tighter. Then finds the common poses.",
+        hyperpose::CommonPoseSettings::kMinClusters, hyperpose::CommonPoseSettings::kMaxClusters);
     ImGui::EndDisabled();
     ImGui::EndDisabled();
     if (running) {
       ImGui::SameLine();
-      ImGui::TextUnformatted("Working...");
+      ImGui::TextUnformatted(k_scan_.valid() ? "Scanning k..." : "Working...");
     }
+    KScanGui();
 
     if (result_.poses.empty()) {
       return;
@@ -1080,7 +1171,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     const std::string name = preview_.clip.path().stem().string();
     ImGui::Text("%s  %s", name.c_str(), library_.Description(name).c_str());
     const hyperpose::ClipPreview::GuiResult result =
-        preview_.Gui(FindEntry(preview_.clip.path()), job_.valid());
+        preview_.Gui(FindEntry(preview_.clip.path()), Busy());
     if (result.close) {
       preview_.active = false;
       pose_valid_ = false;
@@ -1135,6 +1226,14 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
 
   // Clustering.
   std::future<hyperpose::CommonPoseResult> job_;
+  // Cluster count scan (Find best k): its worker, last measures and choice.
+  struct KScan {
+    std::vector<hyperpose::ClusterCountMeasure> measures;
+    std::string error;
+  };
+  std::future<KScan> k_scan_;
+  std::vector<hyperpose::ClusterCountMeasure> k_measures_;
+  int best_k_ = 0;
   hyperpose::CommonPoseResult result_;
   int pose_ = -1;   // Selected common pose.
   int frame_ = 0;   // Shown frame of the selected pose.
@@ -1143,6 +1242,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   hyperpose::PoseGallery gallery_;
   hyperpose::PoseWalk walk_;  // Main character pose walk, when active.
   bool walk_on_result_ = false;  // --walk: starts on the first result.
+  bool best_k_on_result_ = false;  // --best_k: scans k after the first result.
   bool show_gallery_ = true;
 
   // Displayed pose: a clip preview (playing), or a still frame of the

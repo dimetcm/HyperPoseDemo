@@ -104,6 +104,11 @@ target_link_libraries(pointfield_gen PRIVATE hyperpose_core)
 add_executable(pointfield_stats Tools/pointfield_stats/main.cpp)
 target_link_libraries(pointfield_stats PRIVATE hyperpose_core)
 
+# Common pose cluster count scan (see Tools/pose_k_scan/main.cpp).
+add_executable(pose_k_scan Tools/pose_k_scan/main.cpp)
+target_link_libraries(pose_k_scan PRIVATE hyperpose_core)
+target_compile_definitions(pose_k_scan PRIVATE HYPERPOSE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/Assets")
+
 # fbx2mesh (copied from ozz samples, patched): extracts skinned meshes to the
 # framework's mesh.ozz format.
 if(TARGET ozz_animation_fbx)
