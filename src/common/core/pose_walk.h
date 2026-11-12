@@ -10,6 +10,7 @@
 #include <memory>
 #include <random>
 
+#include "common/core/clip_crossfade.h"
 #include "common/core/clip_player.h"
 #include "common/core/common_pose.h"
 #include "ozz/base/containers/vector.h"
@@ -101,56 +102,24 @@ class PoseWalk {
   float clip_duration() const;
 
  private:
-  // Root motion placement of a clip: its root is rotated by yaw about Y,
-  // then shifted on the ground.
-  struct RootOffset {
-    float yaw = 0.f;
-    ozz::math::Float3 shift = ozz::math::Float3::zero();
-  };
-
-  // A segment's clip, fading in over the older ones.
-  struct Track {
-    ClipPlayer clip;
-    RootOffset offset;
-    float age = 0.f;  // Since the segment started (s).
-    ozz::vector<ozz::math::SoaTransform> locals;
-  };
-
   // Picks the segment out of _from (broad phase); _after_end: right after a
   // clip end, so not to a clip end again.
   bool Pick(int _from, bool _after_end, Segment* _segment);
   // Places the blend into next_ (blend_at_, next_.start), from _now in the
   // current segment's clip.
   void Plan(float _now);
-  // Starts playing _segment in a new track, crossfading over the others.
+  // Starts playing _segment's clip, crossfading over the playing ones.
   bool Begin(const Segment& _segment);
-  // Samples the track's clip at its time into its locals, with the root
-  // aligned to the origin, or placed by its offset with root motion.
-  bool SampleRoot(Track* _track);
-  // Sets the track's offset so that its root at its time lands on the
-  // character root (root_position_, root_heading_).
-  void Anchor(Track* _track);
 
   const CommonPoseResult* result_ = nullptr;
-  const ozz::animation::Skeleton* skeleton_ = nullptr;
-  int heading_axis_ = 0;
   Segment segment_;
   // Picked next segment, waiting for the current clip to reach blend_at_.
   Segment next_;
   bool pending_ = false;
   float blend_at_ = 0.f;
   BlendStats stats_;
-  // Playing tracks, oldest first: the last one plays the segment, the
-  // others fade out under it. A segment shorter than the blend leaves
-  // several fading at once, so none is cut mid fade.
-  std::vector<std::unique_ptr<Track>> tracks_;
-  std::vector<std::unique_ptr<Track>> pool_;  // Unused, clip kept loaded.
-  // Character root on the ground (last output), and the root motion setting
-  // the offsets were set for.
-  ozz::math::Float3 root_position_ = ozz::math::Float3::zero();
-  float root_heading_ = 0.f;
-  bool anchored_motion_ = false;
-  ozz::vector<ozz::math::SoaTransform> blended_;
+  // Plays the segments' clips (the last one is the current segment's).
+  ClipCrossfade crossfade_;
   std::mt19937 rng_;
 };
 

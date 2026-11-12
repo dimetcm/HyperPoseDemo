@@ -51,6 +51,8 @@ add_library(hyperpose_core STATIC
   src/common/core/clip_player.cpp
   src/common/core/common_pose.h
   src/common/core/common_pose.cpp
+  src/common/core/clip_crossfade.h
+  src/common/core/clip_crossfade.cpp
   src/common/core/pose_walk.h
   src/common/core/pose_walk.cpp
   src/common/core/pose_project.h
