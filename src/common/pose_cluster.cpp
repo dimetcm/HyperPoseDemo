@@ -26,28 +26,6 @@ void PoseSamples::Add(const PoseFeatures& _features, int _frame) {
 
 namespace {
 
-// Squared distance between sample _a of a and sample _b of b, summed over
-// joints: positions plus weighted velocities.
-float Distance2(const PoseSamples& _a, int _a_sample, const PoseSamples& _b,
-                int _b_sample, float _velocity_weight2) {
-  const math::Float3* pa = _a.position(_a_sample);
-  const math::Float3* pb = _b.position(_b_sample);
-  float position = 0.f;
-  for (int j = 0; j < _a.num_joints; ++j) {
-    position += LengthSqr(pa[j] - pb[j]);
-  }
-  if (_velocity_weight2 <= 0.f) {
-    return position;
-  }
-  const math::Float3* va = _a.velocity(_a_sample);
-  const math::Float3* vb = _b.velocity(_b_sample);
-  float velocity = 0.f;
-  for (int j = 0; j < _a.num_joints; ++j) {
-    velocity += LengthSqr(va[j] - vb[j]);
-  }
-  return position + _velocity_weight2 * velocity;
-}
-
 // Copies sample _from of _samples over sample _to of _centers.
 void CopySample(const PoseSamples& _samples, int _from, PoseSamples* _centers, int _to) {
   const int joints = _samples.num_joints;
@@ -68,9 +46,11 @@ std::vector<PoseCluster> ClusterPoses(const PoseSamples& _samples,
   if (k <= 0) {
     return {};
   }
-  const float weight2 = _velocity_weight * _velocity_weight;
-  auto distance2 = [&](int _sample, const PoseSamples& _centers, int _center) {
-    return Distance2(_samples, _sample, _centers, _center, weight2);
+  // Squared pose distance (see PoseDistanceSqr) of a sample to a center.
+  auto distance_sqr = [&](int _sample, const PoseSamples& _centers, int _center) {
+    return PoseDistanceSqr(_samples.position(_sample), _samples.velocity(_sample),
+                         _centers.position(_center), _centers.velocity(_center), joints,
+                         _velocity_weight);
   };
 
   // Cluster centers: one pose per cluster.
@@ -87,7 +67,7 @@ std::vector<PoseCluster> ClusterPoses(const PoseSamples& _samples,
   for (int c = 0; c < k; ++c) {
     CopySample(_samples, pick, &centers, c);
     for (int i = 0; i < n; ++i) {
-      nearest[i] = std::min(nearest[i], distance2(i, centers, c));
+      nearest[i] = std::min(nearest[i], distance_sqr(i, centers, c));
     }
     std::discrete_distribution<int> next(nearest.begin(), nearest.end());
     pick = next(rng);
@@ -104,7 +84,7 @@ std::vector<PoseCluster> ClusterPoses(const PoseSamples& _samples,
       int best = 0;
       float best_d = std::numeric_limits<float>::max();
       for (int c = 0; c < k; ++c) {
-        const float d = distance2(_i, centers, c);
+        const float d = distance_sqr(_i, centers, c);
         if (d < best_d) {
           best_d = d;
           best = c;
@@ -152,10 +132,9 @@ std::vector<PoseCluster> ClusterPoses(const PoseSamples& _samples,
   std::vector<PoseCluster> clusters(k);
   std::vector<float> distances(n);
   for (int i = 0; i < n; ++i) {
-    distances[i] = distance2(i, centers, assignment[i]);
+    distances[i] = distance_sqr(i, centers, assignment[i]);
     clusters[assignment[i]].members.push_back(i);
   }
-  const float per_joint = 1.f / std::max(joints, 1);
   for (PoseCluster& cluster : clusters) {
     if (cluster.members.empty()) {
       continue;
@@ -167,11 +146,10 @@ std::vector<PoseCluster> ClusterPoses(const PoseSamples& _samples,
     cluster.distances.reserve(cluster.members.size());
     for (int i : cluster.members) {
       sum += distances[i];
-      cluster.distances.push_back(std::sqrt(distances[i] * per_joint));
+      cluster.distances.push_back(PoseRms(distances[i], joints));
     }
-    // RMS of the members' per joint distances to the center.
-    cluster.spread =
-        static_cast<float>(std::sqrt(sum / cluster.members.size() * per_joint));
+    // RMS of the members' distances to the center.
+    cluster.spread = PoseRms(static_cast<float>(sum / cluster.members.size()), joints);
   }
   clusters.erase(std::remove_if(clusters.begin(), clusters.end(),
                                 [](const PoseCluster& _c) { return _c.members.empty(); }),

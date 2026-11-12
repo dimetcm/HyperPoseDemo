@@ -1345,8 +1345,8 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       }
       const hyperpose::PoseWalk::BlendStats& stats = walk_.stats();
       ImGui::SetItemTooltip(
-          "Pose difference where the walk blended into this segment: mean joint\n"
-          "distance plus velocity weight x mean joint velocity difference.\n"
+          "Pose difference where the walk blended into this segment: per joint\n"
+          "RMS of position and weighted velocity differences, as the spread.\n"
           "Since the walk started: %d blends, mean %.1f cm; %d carried on.",
           stats.blends, stats.mean() * 100.f, stats.continued);
     }

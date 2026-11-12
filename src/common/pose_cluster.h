@@ -39,12 +39,10 @@ struct PoseCluster {
   std::vector<float> distances;  // Per member: distance to the center (m).
 };
 
-// Clusters _samples into _k clusters with k-means (k-means++ seeding). Poses
-// are compared by their joint positions, plus their joint velocities times
-// _velocity_weight (seconds: a velocity difference of 1 m/s counts as that
-// many meters; 0 for positions only). Distances are per joint: the root of
-// the mean over joints of the squared differences. Returns non-empty
-// clusters, largest first.
+// Clusters _samples into _k clusters with k-means (k-means++ seeding), by the
+// pose distance (PoseDistanceSqr in pose_match.h, 0 _velocity_weight for
+// positions only). Reported distances are its per joint RMS (PoseRms).
+// Returns non-empty clusters, largest first.
 std::vector<PoseCluster> ClusterPoses(const PoseSamples& _samples,
                                       float _velocity_weight, int _k,
                                       uint32_t _seed, int _max_iterations = 50);

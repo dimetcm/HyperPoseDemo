@@ -133,17 +133,16 @@ bool ExtractPoseFeatures(const ozz::animation::Animation& _animation,
     }
     to_features(rest.data(), nullptr, nullptr);
   }
-  // Mean joint distance (m). Converted bind poses land a few cm off the rest
-  // pose (2.6 to 2.9 in the CMU clips), real motion tens of cm (~43 there).
+  // Pose distance of positions (m, per joint RMS). Converted bind poses land
+  // a few cm off the rest pose, real motion tens of cm.
   const float kBindPoseTolerance = .05f;
   f.first_frame = 0;
   while (f.first_frame < f.num_frames) {
     const math::Float3* p = &f.positions[f.first_frame * f.num_joints];
-    float distance = 0.f;
-    for (int j = 0; j < f.num_joints; ++j) {
-      distance += Length(p[j] - rest[j]);
-    }
-    if (distance > kBindPoseTolerance * f.num_joints) {
+    const float distance =
+        PoseRms(PoseDistanceSqr(p, nullptr, rest.data(), nullptr, f.num_joints, 0.f),
+                f.num_joints);
+    if (distance > kBindPoseTolerance) {
       break;
     }
     ++f.first_frame;
@@ -204,16 +203,30 @@ float PoseFrameDifference(const PoseFeatures& _a, int _a_frame,
   if (num_joints == 0) {
     return 0.f;
   }
-  const math::Float3* pa = &_a.positions[_a_frame * _a.num_joints];
-  const math::Float3* va = &_a.velocities[_a_frame * _a.num_joints];
-  const math::Float3* pb = &_b.positions[_b_frame * _b.num_joints];
-  const math::Float3* vb = &_b.velocities[_b_frame * _b.num_joints];
-  float position = 0.f, velocity = 0.f;
-  for (int j = 0; j < num_joints; ++j) {
-    position += Length(pa[j] - pb[j]);
-    velocity += Length(va[j] - vb[j]);
+  const size_t a = static_cast<size_t>(_a_frame) * _a.num_joints;
+  const size_t b = static_cast<size_t>(_b_frame) * _b.num_joints;
+  return PoseRms(PoseDistanceSqr(&_a.positions[a], &_a.velocities[a], &_b.positions[b],
+                               &_b.velocities[b], num_joints, _velocity_weight),
+                 num_joints);
+}
+
+float PoseDistanceSqr(const math::Float3* _a_positions,
+                    const math::Float3* _a_velocities,
+                    const math::Float3* _b_positions,
+                    const math::Float3* _b_velocities, int _num_joints,
+                    float _velocity_weight) {
+  float position = 0.f;
+  for (int j = 0; j < _num_joints; ++j) {
+    position += LengthSqr(_a_positions[j] - _b_positions[j]);
   }
-  return (position + _velocity_weight * velocity) / num_joints;
+  if (_velocity_weight <= 0.f) {
+    return position;
+  }
+  float velocity = 0.f;
+  for (int j = 0; j < _num_joints; ++j) {
+    velocity += LengthSqr(_a_velocities[j] - _b_velocities[j]);
+  }
+  return position + _velocity_weight * _velocity_weight * velocity;
 }
 
 bool IsValidTransition(const PoseDifference& _difference, int _a_frame,

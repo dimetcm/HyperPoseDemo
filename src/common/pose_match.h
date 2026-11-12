@@ -9,6 +9,8 @@
 // any vertical offset of the clip. Joint
 // velocities are included, so poses moving in opposite directions don't match.
 
+#include <cmath>
+
 #include "ozz/base/containers/vector.h"
 #include "ozz/base/maths/simd_math.h"
 #include "ozz/base/maths/vec_float.h"
@@ -39,7 +41,7 @@ struct PoseFeatures {
 
 // Samples _animation at _frame_rate and extracts pose features. The root is
 // joint 0 of _skeleton. Leading frames in the skeleton's rest pose (within
-// 5 cm mean joint distance) are detected as a bind pose (see first_frame),
+// 5 cm, see PoseDistanceSqr) are detected as a bind pose (see first_frame),
 // unless every frame is.
 bool ExtractPoseFeatures(const ozz::animation::Animation& _animation,
                          const ozz::animation::Skeleton& _skeleton,
@@ -69,9 +71,24 @@ struct PoseDifference {
   float at(int _a, int _b) const { return values[_a * cols + _b]; }
 };
 
-// Pose difference between frame _a_frame of a and _b_frame of b: mean joint
-// position distance, plus _velocity_weight (seconds) times mean joint
-// velocity distance (m). a and b must share frame rate and joint count.
+// The pose distance, shared by clustering, matching and blending: for each
+// joint, the squared position difference plus _velocity_weight (seconds)
+// squared times the squared velocity difference. A velocity difference of
+// 1 m/s counts as _velocity_weight meters.
+//
+// Sum over _num_joints joints of that (m^2): what k-means minimizes.
+float PoseDistanceSqr(const ozz::math::Float3* _a_positions,
+                    const ozz::math::Float3* _a_velocities,
+                    const ozz::math::Float3* _b_positions,
+                    const ozz::math::Float3* _b_velocities, int _num_joints,
+                    float _velocity_weight);
+// Its per joint RMS (m): the root of the mean over joints, as shown.
+inline float PoseRms(float _distance_sqr, int _num_joints) {
+  return _num_joints > 0 ? std::sqrt(_distance_sqr / _num_joints) : 0.f;
+}
+
+// Pose difference between frame _a_frame of a and _b_frame of b: per joint
+// RMS of PoseDistanceSqr (m). a and b must share joint count.
 float PoseFrameDifference(const PoseFeatures& _a, int _a_frame,
                           const PoseFeatures& _b, int _b_frame,
                           float _velocity_weight);
