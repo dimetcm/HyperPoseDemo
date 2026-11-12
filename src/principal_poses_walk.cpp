@@ -415,15 +415,20 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       ozz::log::Err() << result_.error << std::endl;
       return;
     }
-    // Clip frame rates, as detected.
+    // Clip frame rates, as detected, and leading bind poses left out.
     std::map<float, int> rates;
+    int bind_poses = 0;
     for (const hyperpose::PoseFeatures& features : result_.features) {
       ++rates[features.frame_rate];
+      bind_poses += features.first_frame > 0;
     }
     std::string rates_text;
     for (const auto& [rate, clips] : rates) {
       rates_text += (rates_text.empty() ? "" : ", ") + std::to_string(clips) + " at " +
                     std::to_string(static_cast<int>(rate)) + " Hz";
+    }
+    if (bind_poses > 0) {
+      rates_text += ", " + std::to_string(bind_poses) + " starting with a bind pose";
     }
     ozz::log::Out() << result_.poses.size() << " common poses of "
                     << result_.num_frames << " frames from "

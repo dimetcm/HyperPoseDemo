@@ -85,15 +85,10 @@ bool ExtractPoseFeatures(const ozz::animation::Animation& _animation,
   ozz::vector<math::Float4x4> models(_skeleton.num_joints());
   ozz::animation::SamplingJob::Context context(_skeleton.num_joints());
 
-  // Samples the pose at _time into _positions (num_joints): relative to the
+  // Pose features of model-space joint matrices (models): relative to the
   // whole root position, height included, so clips whose root sits at a
   // different height (vertical offset) still compare, and heading aligned.
-  auto sample = [&](float _time, math::Float3* _positions, math::Float3* _root,
-                    float* _heading) {
-    if (!SamplePose(_animation, _skeleton, duration > 0.f ? _time / duration : 0.f,
-                    &context, make_span(locals), make_span(models))) {
-      return false;
-    }
+  auto to_features = [&](math::Float3* _positions, math::Float3* _root, float* _heading) {
     math::Float3 root;
     math::Store3PtrU(models[0].cols[3], &root.x);
     const float heading = RootHeading(models[0], axis);
@@ -106,25 +101,71 @@ bool ExtractPoseFeatures(const ozz::animation::Animation& _animation,
       *_root = root;
       *_heading = heading;
     }
+  };
+  // Samples the pose at _time into _positions (num_joints).
+  auto sample = [&](float _time, math::Float3* _positions, math::Float3* _root,
+                    float* _heading) {
+    if (!SamplePose(_animation, _skeleton, duration > 0.f ? _time / duration : 0.f,
+                    &context, make_span(locals), make_span(models))) {
+      return false;
+    }
+    to_features(_positions, _root, _heading);
     return true;
   };
+  auto frame_time = [&](int _frame) { return std::min(_frame / _frame_rate, duration); };
+
+  for (int frame = 0; frame < f.num_frames; ++frame) {
+    if (!sample(frame_time(frame), &f.positions[frame * f.num_joints],
+                &f.root_positions[frame], &f.root_headings[frame])) {
+      return false;
+    }
+  }
+
+  // Leading bind pose: frames in the skeleton's rest pose.
+  ozz::vector<math::Float3> rest(f.num_joints);
+  {
+    ozz::animation::LocalToModelJob job;
+    job.skeleton = &_skeleton;
+    job.input = _skeleton.joint_rest_poses();
+    job.output = make_span(models);
+    if (!job.Run()) {
+      return false;
+    }
+    to_features(rest.data(), nullptr, nullptr);
+  }
+  // Mean joint distance (m). Converted bind poses land a few cm off the rest
+  // pose (2.6 to 2.9 in the CMU clips), real motion tens of cm (~43 there).
+  const float kBindPoseTolerance = .05f;
+  f.first_frame = 0;
+  while (f.first_frame < f.num_frames) {
+    const math::Float3* p = &f.positions[f.first_frame * f.num_joints];
+    float distance = 0.f;
+    for (int j = 0; j < f.num_joints; ++j) {
+      distance += Length(p[j] - rest[j]);
+    }
+    if (distance > kBindPoseTolerance * f.num_joints) {
+      break;
+    }
+    ++f.first_frame;
+  }
+  if (f.first_frame == f.num_frames) {
+    f.first_frame = 0;  // All rest pose: nothing else to use.
+  }
+  const float start = frame_time(f.first_frame);
 
   // Velocities from two extra samples kVelocityStep around each frame,
   // rather than from the neighbor frames: as precise at the clip ends as in
   // the middle (one sided there, but over a short step), and independent of
-  // the frame rate.
+  // the frame rate. Not sampled before the motion starts, so the snap out of
+  // a bind pose doesn't count.
   const float kVelocityStep = 1.f / 60.f;
   ozz::vector<math::Float3> before(f.num_joints), after(f.num_joints);
   for (int frame = 0; frame < f.num_frames; ++frame) {
-    const float time = std::min(frame / _frame_rate, duration);
-    if (!sample(time, &f.positions[frame * f.num_joints], &f.root_positions[frame],
-                &f.root_headings[frame])) {
-      return false;
-    }
-    const float t0 = std::max(time - kVelocityStep, 0.f);
+    const float time = frame_time(frame);
+    const float t0 = std::max(time - kVelocityStep, start);
     const float t1 = std::min(time + kVelocityStep, duration);
     math::Float3* velocities = &f.velocities[frame * f.num_joints];
-    if (t1 <= t0) {  // A single frame clip.
+    if (t1 <= t0) {  // A single frame clip, or a bind pose frame.
       std::fill(velocities, velocities + f.num_joints, math::Float3::zero());
       continue;
     }

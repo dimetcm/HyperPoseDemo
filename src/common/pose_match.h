@@ -31,10 +31,16 @@ struct PoseFeatures {
   // Per frame root position (model space) and heading (radians about Y).
   ozz::vector<ozz::math::Float3> root_positions;
   ozz::vector<float> root_headings;
+  // First frame of the motion: frames before it are a leading bind pose (the
+  // skeleton's rest pose, as conversions often leave on the first frame), and
+  // velocities aren't sampled before it.
+  int first_frame = 0;
 };
 
 // Samples _animation at _frame_rate and extracts pose features. The root is
-// joint 0 of _skeleton.
+// joint 0 of _skeleton. Leading frames in the skeleton's rest pose (within
+// 5 cm mean joint distance) are detected as a bind pose (see first_frame),
+// unless every frame is.
 bool ExtractPoseFeatures(const ozz::animation::Animation& _animation,
                          const ozz::animation::Skeleton& _skeleton,
                          float _frame_rate, PoseFeatures* _features);

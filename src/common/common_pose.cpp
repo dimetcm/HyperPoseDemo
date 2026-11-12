@@ -131,12 +131,14 @@ CommonPoseResult FindCommonPoses(std::vector<PoseSetEntry> _entries,
       result.error = "Failed to load " + entry.path.filename().string();
       return result;
     }
+    // From the motion start: a leading bind pose is left out.
+    const float begin = std::max(entry.begin, features.first_frame / features.frame_rate);
     const float end = entry.end < 0.f ? animation.duration()
                                       : std::min(entry.end, animation.duration());
-    ranges.push_back({entry.begin, end});
-    for (int frame = 0; frame < features.num_frames; frame += _stride) {
+    ranges.push_back({begin, end});
+    for (int frame = features.first_frame; frame < features.num_frames; frame += _stride) {
       const float time = frame / features.frame_rate;
-      if (time < entry.begin || time > end) {
+      if (time < begin || time > end) {
         continue;
       }
       samples.push_back({static_cast<int>(e), time});
