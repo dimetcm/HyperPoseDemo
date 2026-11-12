@@ -100,6 +100,14 @@ void BuildTransitions(const std::vector<Sample>& _samples,
 
 }  // namespace
 
+CommonPoseSettings CommonPoseSettings::Clamped() const {
+  CommonPoseSettings settings = *this;
+  settings.clusters = std::clamp(clusters, kMinClusters, kMaxClusters);
+  settings.stride = std::clamp(stride, 1, kMaxStride);
+  settings.velocity_weight = std::max(velocity_weight, 0.f);
+  return settings;
+}
+
 float EnteredAt(const CommonPoseResult& _result, int _transition) {
   const PoseTransition& transition = _result.transitions[_transition];
   if (_transition > 0 && _result.transitions[_transition - 1].clip == transition.clip) {
@@ -110,9 +118,8 @@ float EnteredAt(const CommonPoseResult& _result, int _transition) {
 
 CommonPoseResult FindCommonPoses(std::vector<PoseSetEntry> _entries,
                                  const ozz::animation::Skeleton* _skeleton,
-                                 int _stride, int _k, uint32_t _seed,
-                                 float _velocity_weight) {
-  _stride = std::max(_stride, 1);
+                                 CommonPoseSettings _settings) {
+  _settings = _settings.Clamped();
   const auto start = std::chrono::steady_clock::now();
   CommonPoseResult result;
   std::vector<Sample> samples;  // Clip and time of each pose.
@@ -136,7 +143,7 @@ CommonPoseResult FindCommonPoses(std::vector<PoseSetEntry> _entries,
     const float end = entry.end < 0.f ? animation.duration()
                                       : std::min(entry.end, animation.duration());
     ranges.push_back({begin, end});
-    for (int frame = features.first_frame; frame < features.num_frames; frame += _stride) {
+    for (int frame = features.first_frame; frame < features.num_frames; frame += _settings.stride) {
       const float time = frame / features.frame_rate;
       if (time < begin || time > end) {
         continue;
@@ -147,7 +154,10 @@ CommonPoseResult FindCommonPoses(std::vector<PoseSetEntry> _entries,
   }
   result.num_frames = static_cast<int>(samples.size());
   std::vector<int> labels(samples.size(), -1);  // Pose of each sample.
-  for (const PoseCluster& cluster : ClusterPoses(poses, _velocity_weight, _k, _seed)) {
+  const std::vector<PoseCluster> clusters =
+      ClusterPoses(poses, _settings.velocity_weight, _settings.clusters,
+                   static_cast<uint32_t>(_settings.seed));
+  for (const PoseCluster& cluster : clusters) {
     CommonPose pose;
     pose.spread = cluster.spread;
     pose.frames.reserve(cluster.members.size());

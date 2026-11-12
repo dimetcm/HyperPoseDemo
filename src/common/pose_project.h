@@ -12,43 +12,40 @@
 //   velocity_weight 0.1
 //   clip <begin> <end> <path>
 //
-// Clip paths are relative to the clip root (absolute if outside it), with
-// '/' separators; end < 0 means the clip end.
+// In the file, clip paths are relative to the clip root (absolute if outside
+// it), with '/' separators; in memory, they're full paths. end < 0 means the
+// clip end.
 
 #include <filesystem>
 #include <string>
 #include <vector>
 
+#include "common/common_pose.h"
+
 namespace hyperpose {
 
+// A pose set and the settings to find its common poses with.
 struct PoseProject {
-  struct Clip {
-    std::filesystem::path path;
-    float begin = 0.f;
-    float end = -1.f;
-    bool operator==(const Clip& _o) const {
-      return path == _o.path && begin == _o.begin && end == _o.end;
-    }
-  };
-  std::vector<Clip> clips;
-  int clusters = 12;
-  int stride = 1;  // Clusters every stride-th frame of the clips.
-  int seed = 1;
-  // Joint velocities against positions when clustering (seconds, 0: off).
-  float velocity_weight = .1f;
+  std::vector<PoseSetEntry> clips;  // Durations aren't saved.
+  CommonPoseSettings settings;
 
   bool operator==(const PoseProject& _o) const {
-    return clips == _o.clips && clusters == _o.clusters && stride == _o.stride &&
-           seed == _o.seed && velocity_weight == _o.velocity_weight;
+    return clips == _o.clips && settings == _o.settings;
   }
   bool operator!=(const PoseProject& _o) const { return !(*this == _o); }
 };
 
 constexpr const char* kProjectExtension = ".hpproject";
 
+// Saves _project to _path, with clip paths relative to _clip_root.
 bool SavePoseProject(const std::filesystem::path& _path,
-                     const PoseProject& _project, std::string* _error);
+                     const PoseProject& _project,
+                     const std::filesystem::path& _clip_root, std::string* _error);
+// Loads _project from _path, resolving relative clip paths against
+// _clip_root. Settings are clamped to their ranges; clip durations are left
+// at 0 (see PoseSetEntry).
 bool LoadPoseProject(const std::filesystem::path& _path,
+                     const std::filesystem::path& _clip_root,
                      PoseProject* _project, std::string* _error);
 
 // Project files in _folder, most recently modified first.

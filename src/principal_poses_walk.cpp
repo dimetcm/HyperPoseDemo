@@ -309,7 +309,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     ImGui::BeginChild("browser", ImVec2(0.f, ImGui::GetContentRegionAvail().y * .4f),
                       ImGuiChildFlags_ResizeY);
     std::vector<fs::path> in_set;
-    for (const PoseSetEntry& entry : set_) {
+    for (const PoseSetEntry& entry : project_.clips) {
       in_set.push_back(entry.path);
     }
     std::vector<fs::path> highlighted;
@@ -356,9 +356,9 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
  private:
   // Pose set entry of _clip, nullptr if not in the set.
   PoseSetEntry* FindEntry(const fs::path& _clip) {
-    const auto it = std::find_if(set_.begin(), set_.end(),
+    const auto it = std::find_if(project_.clips.begin(), project_.clips.end(),
                                  [&](const PoseSetEntry& _e) { return _e.path == _clip; });
-    return it == set_.end() ? nullptr : &*it;
+    return it == project_.clips.end() ? nullptr : &*it;
   }
 
   // Trim range of an entry: the part of the clip used (end < 0: clip end).
@@ -377,14 +377,13 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
 
   // Starts clustering the pose set on a worker thread.
   void StartClustering() {
-    if (set_.empty() || job_.valid()) {
+    if (project_.clips.empty() || job_.valid()) {
       return;
     }
     status_.clear();
-    clustered_project_ = CurrentProject();
-    job_ = std::async(std::launch::async, hyperpose::FindCommonPoses, set_, &skeleton(),
-                      stride_, k_, static_cast<uint32_t>(seed_),
-                      velocity_weight_);
+    clustered_project_ = project_;
+    job_ = std::async(std::launch::async, hyperpose::FindCommonPoses, project_.clips, &skeleton(),
+                      project_.settings);
   }
 
   // How a walk segment was reached, other than by a transition.
@@ -453,25 +452,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     }
   }
 
-  // Project: the pose set and common pose settings, as saved.
-  hyperpose::PoseProject CurrentProject() const {
-    hyperpose::PoseProject project;
-    for (const PoseSetEntry& entry : set_) {
-      // Relative to the clip root, so projects survive moving the assets.
-      fs::path path = entry.path.lexically_relative(library_.root());
-      if (path.empty() || *path.begin() == "..") {
-        path = entry.path;
-      }
-      project.clips.push_back({path, entry.begin, entry.end});
-    }
-    project.clusters = k_;
-    project.stride = stride_;
-    project.seed = seed_;
-    project.velocity_weight = velocity_weight_;
-    return project;
-  }
-
-  bool ProjectDirty() const { return CurrentProject() != saved_project_; }
+  bool ProjectDirty() const { return project_ != saved_project_; }
 
   std::string ProjectName() const {
     return project_path_.empty() ? "Untitled" : project_path_.stem().string();
@@ -479,13 +460,9 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
 
   // Empty, untitled project with default settings.
   void NewProject() {
-    set_.clear();
-    k_ = 12;
-    stride_ = hyperpose::PoseProject().stride;
-    seed_ = 1;
-    velocity_weight_ = hyperpose::PoseProject().velocity_weight;
+    project_ = hyperpose::PoseProject();
     project_path_.clear();
-    saved_project_ = CurrentProject();
+    saved_project_ = project_;
   }
 
   // Loads a project's set and settings, then finds its common poses. Clips
@@ -497,31 +474,29 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     }
     hyperpose::PoseProject project;
     std::string error;
-    if (!hyperpose::LoadPoseProject(_path, &project, &error)) {
+    if (!hyperpose::LoadPoseProject(_path, library_.root(), &project, &error)) {
       status_ = error;
       return false;
     }
-    set_.clear();
+    // Clips added one by one: checks they exist and share the skeleton, and
+    // reads their durations.
+    project_ = hyperpose::PoseProject();
+    project_.settings = project.settings;
     int missing = 0;
-    for (const hyperpose::PoseProject::Clip& clip : project.clips) {
-      const fs::path path = clip.path.is_absolute() ? clip.path : library_.root() / clip.path;
-      const size_t size = set_.size();
+    for (const PoseSetEntry& clip : project.clips) {
+      const size_t size = project_.clips.size();
       std::error_code ec;
-      if (!fs::exists(path, ec) || !Add(path) || set_.size() == size) {
+      if (!fs::exists(clip.path, ec) || !Add(clip.path) || project_.clips.size() == size) {
         ++missing;
         continue;
       }
-      set_.back().begin = clip.begin;
-      set_.back().end = clip.end;
+      project_.clips.back().begin = clip.begin;
+      project_.clips.back().end = clip.end;
     }
-    k_ = std::clamp(project.clusters, 2, 64);
-    stride_ = std::clamp(project.stride, 1, kMaxStride);
-    seed_ = project.seed;
-    velocity_weight_ = std::max(0.f, project.velocity_weight);
     project_path_ = _path;
-    saved_project_ = missing ? project : CurrentProject();
+    saved_project_ = missing ? project : project_;
     hyperpose::SetRecentPoseProject(_path);
-    status_ = "Opened " + ProjectName() + ": " + std::to_string(set_.size()) + " clips";
+    status_ = "Opened " + ProjectName() + ": " + std::to_string(project_.clips.size()) + " clips";
     if (missing) {
       status_ += ", " + std::to_string(missing) + " missing or not loaded";
     }
@@ -531,14 +506,13 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   }
 
   bool SaveProject(const fs::path& _path) {
-    const hyperpose::PoseProject project = CurrentProject();
     std::string error;
-    if (!hyperpose::SavePoseProject(_path, project, &error)) {
+    if (!hyperpose::SavePoseProject(_path, project_, library_.root(), &error)) {
       status_ = error;
       return false;
     }
     project_path_ = _path;
-    saved_project_ = project;
+    saved_project_ = project_;
     hyperpose::SetRecentPoseProject(_path);
     status_ = "Saved " + _path.string();
     return true;
@@ -671,18 +645,18 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   // Adds a clip to the pose set, or removes it if already in. All clips must
   // share a skeleton.
   void Toggle(const fs::path& _clip) {
-    const auto it = std::find_if(set_.begin(), set_.end(), [&](const PoseSetEntry& _e) {
+    const auto it = std::find_if(project_.clips.begin(), project_.clips.end(), [&](const PoseSetEntry& _e) {
       return _e.path == _clip;
     });
-    if (it != set_.end()) {
-      set_.erase(it);
+    if (it != project_.clips.end()) {
+      project_.clips.erase(it);
       return;
     }
     Add(_clip);
   }
 
   bool Add(const fs::path& _clip) {
-    if (std::any_of(set_.begin(), set_.end(),
+    if (std::any_of(project_.clips.begin(), project_.clips.end(),
                     [&](const PoseSetEntry& _e) { return _e.path == _clip; })) {
       return true;
     }
@@ -691,7 +665,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     }
     float duration = 0.f;
     hyperpose::ReadClipDuration(_clip.string().c_str(), &duration);
-    set_.push_back({_clip, duration});
+    project_.clips.push_back({_clip, duration});
     status_.clear();
     return true;
   }
@@ -700,7 +674,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   // while the pose set is empty, as all set clips must share a skeleton.
   bool UseSkeleton(const fs::path& _clip) {
     const auto use = clip_skeleton_.Use(_clip, library_.root(),
-                                        set_.empty() && !job_.valid());
+                                        project_.clips.empty() && !job_.valid());
     if (use == hyperpose::ClipSkeleton::Result::kFailed) {
       status_ = clip_skeleton_.error();
       return false;
@@ -726,12 +700,12 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
 
   void PoseSetGui() {
     float total = 0.f;  // Of the trimmed clips.
-    for (const PoseSetEntry& entry : set_) {
+    for (const PoseSetEntry& entry : project_.clips) {
       total += TrimEnd(entry) - entry.begin;
     }
     char header[96];
     std::snprintf(header, sizeof(header), "Pose set: %d clips, %.0fs###set",
-                  static_cast<int>(set_.size()), total);
+                  static_cast<int>(project_.clips.size()), total);
     if (!ImGui::CollapsingHeader(header, ImGuiTreeNodeFlags_DefaultOpen)) {
       return;
     }
@@ -749,33 +723,33 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     }
     ImGui::SameLine();
     if (ImGui::Button("Clear")) {
-      set_.clear();
+      project_.clips.clear();
     }
 
     // Set list, with trim ranges.
-    if (!set_.empty()) {
+    if (!project_.clips.empty()) {
       const float line = ImGui::GetTextLineHeightWithSpacing();
-      ImGui::BeginChild("set", ImVec2(0.f, std::min<float>(set_.size(), 6.f) * line + line * .5f),
+      ImGui::BeginChild("set", ImVec2(0.f, std::min<float>(project_.clips.size(), 6.f) * line + line * .5f),
                         ImGuiChildFlags_Borders);
-      for (size_t i = 0; i < set_.size(); ++i) {
+      for (size_t i = 0; i < project_.clips.size(); ++i) {
         ImGui::PushID(static_cast<int>(i));
         if (ImGui::SmallButton("x")) {
-          set_.erase(set_.begin() + i);
+          project_.clips.erase(project_.clips.begin() + i);
           ImGui::PopID();
           break;
         }
         ImGui::SameLine();
-        const std::string name = set_[i].path.stem().string();
+        const std::string name = project_.clips[i].path.stem().string();
         char label[128];
-        if (Trimmed(set_[i])) {
+        if (Trimmed(project_.clips[i])) {
           std::snprintf(label, sizeof(label), "%s  %.1f-%.1fs of %.1fs", name.c_str(),
-                        set_[i].begin, TrimEnd(set_[i]), set_[i].duration);
+                        project_.clips[i].begin, TrimEnd(project_.clips[i]), project_.clips[i].duration);
         } else {
-          std::snprintf(label, sizeof(label), "%s  %.1fs", name.c_str(), set_[i].duration);
+          std::snprintf(label, sizeof(label), "%s  %.1fs", name.c_str(), project_.clips[i].duration);
         }
-        if (ImGui::Selectable(label, PreviewedClip() == set_[i].path, 0,
+        if (ImGui::Selectable(label, PreviewedClip() == project_.clips[i].path, 0,
                               ImVec2(ImGui::CalcTextSize(label).x, 0.f))) {
-          PreviewClip(set_[i].path);
+          PreviewClip(project_.clips[i].path);
         }
         ImGui::SetItemTooltip("Click to preview and trim.");
         const std::string& description = library_.Description(name);
@@ -797,25 +771,28 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     ImGui::BeginDisabled(running);
     const float half = ImGui::GetContentRegionAvail().x * .35f;
     ImGui::SetNextItemWidth(half);
-    ImGui::SliderInt("Clusters", &k_, 2, 64);
+    ImGui::SliderInt("Clusters", &project_.settings.clusters,
+                     hyperpose::CommonPoseSettings::kMinClusters,
+                     hyperpose::CommonPoseSettings::kMaxClusters);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(half * .5f);
-    ImGui::SliderInt("Step", &stride_, 1, kMaxStride,
-                     stride_ == 1 ? "every frame" : "every %d frames");
+    ImGui::SliderInt("Step", &project_.settings.stride, 1,
+                     hyperpose::CommonPoseSettings::kMaxStride,
+                     project_.settings.stride == 1 ? "every frame" : "every %d frames");
     ImGui::SetItemTooltip(
         "Clip frames clustered: every frame, or every n-th to cluster large\n"
         "sets faster. Each clip's frame rate is detected from its keys.");
     ImGui::SetNextItemWidth(half);
-    ImGui::InputInt("Seed", &seed_);
+    ImGui::InputInt("Seed", &project_.settings.seed);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(half * .5f);
-    ImGui::SliderFloat("Velocity", &velocity_weight_, 0.f, .5f, "%.2fs");
+    ImGui::SliderFloat("Velocity", &project_.settings.velocity_weight, 0.f, .5f, "%.2fs");
     ImGui::SetItemTooltip(
         "Weight of joint velocities against positions (seconds): a velocity\n"
         "difference of 1 m/s counts as this many meters of position\n"
         "difference, so the same pose moving in opposite directions can split\n"
         "into different common poses. 0: positions only.");
-    ImGui::BeginDisabled(set_.empty());
+    ImGui::BeginDisabled(project_.clips.empty());
     if (ImGui::Button("Find common poses")) {
       StartClustering();
     }
@@ -829,7 +806,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     if (result_.poses.empty()) {
       return;
     }
-    if (!running && CurrentProject() != clustered_project_) {
+    if (!running && project_ != clustered_project_) {
       ImGui::TextColored(ImVec4(1.f, .7f, .3f, 1.f),
                          "Pose set, trims or settings changed: find common poses again.");
     }
@@ -1591,8 +1568,8 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   bool draw_mesh_ = true;
   bool draw_skeleton_ = false;
 
-  // Pose set and shared skeleton.
-  std::vector<PoseSetEntry> set_;
+  // The pose set and its common pose settings: the open project, as edited.
+  hyperpose::PoseProject project_;
 
   // Project file of the set and settings, as last opened / saved.
   fs::path projects_dir_;
@@ -1609,12 +1586,6 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   hyperpose::ClipSkeleton clip_skeleton_;
 
   // Clustering.
-  int k_ = 12;
-  int stride_ = 1;  // Clusters every stride_-th frame.
-  static constexpr int kMaxStride = 10;
-  int seed_ = 1;
-  // Joint velocities against positions (seconds, 0: positions only).
-  float velocity_weight_ = hyperpose::PoseProject().velocity_weight;
   std::future<hyperpose::CommonPoseResult> job_;
   hyperpose::CommonPoseResult result_;
   int pose_ = -1;   // Selected common pose.

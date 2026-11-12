@@ -20,9 +20,15 @@ namespace hyperpose {
 // A clip of a pose set, with the time range to consider (trimming).
 struct PoseSetEntry {
   std::filesystem::path path;
-  float duration = 0.f;
+  float duration = 0.f;  // Of the whole clip (s), read when it's added.
   float begin = 0.f;
   float end = -1.f;  // Negative: clip end.
+
+  // Same clip and range (the duration comes from the clip).
+  bool operator==(const PoseSetEntry& _o) const {
+    return path == _o.path && begin == _o.begin && end == _o.end;
+  }
+  bool operator!=(const PoseSetEntry& _o) const { return !(*this == _o); }
 };
 
 // A common pose: the pose set frames that look alike, as clip + time, ordered
@@ -69,6 +75,29 @@ struct PoseExits {
 // Shortest stay in a common pose that isn't a bounce (s).
 constexpr float kMinPoseStay = .2f;
 
+// Settings for finding common poses (saved with projects).
+struct CommonPoseSettings {
+  static constexpr int kMinClusters = 2;
+  static constexpr int kMaxClusters = 64;
+  static constexpr int kMaxStride = 10;
+
+  int clusters = 12;  // k-means clusters.
+  int stride = 1;     // Clusters every stride-th frame of the clips.
+  int seed = 1;       // k-means++ seeding.
+  // Joint velocities against positions (seconds: a velocity difference of
+  // 1 m/s counts as that many meters; 0: positions only).
+  float velocity_weight = .1f;
+
+  // These settings with every value in its range.
+  CommonPoseSettings Clamped() const;
+
+  bool operator==(const CommonPoseSettings& _o) const {
+    return clusters == _o.clusters && stride == _o.stride && seed == _o.seed &&
+           velocity_weight == _o.velocity_weight;
+  }
+  bool operator!=(const CommonPoseSettings& _o) const { return !(*this == _o); }
+};
+
 struct CommonPoseResult {
   std::vector<std::filesystem::path> clips;
   std::vector<CommonPose> poses;  // Most frames first.
@@ -88,15 +117,14 @@ struct CommonPoseResult {
 // transition's time (the transition's own for an entry).
 float EnteredAt(const CommonPoseResult& _result, int _transition);
 
-// Samples every entry at its own frame rate, and clusters every _stride-th
-// frame (1: every frame) in _k common poses. Poses are compared by joint positions plus, when
-// _velocity_weight (seconds) > 0, joint velocities times _velocity_weight, so
-// the same pose moving in opposite directions can split; distances are the
-// root of the mean per joint squared difference. Only reads its arguments, so
-// it can run on a worker thread.
+// Samples every entry at its own frame rate, and clusters every stride-th
+// frame (1: every frame) in common poses (see CommonPoseSettings). Poses are
+// compared by joint positions plus, when velocity_weight > 0, joint
+// velocities times velocity_weight, so the same pose moving in opposite
+// directions can split; distances are the root of the mean per joint squared
+// difference. Only reads its arguments, so it can run on a worker thread.
 CommonPoseResult FindCommonPoses(std::vector<PoseSetEntry> _entries,
                                  const ozz::animation::Skeleton* _skeleton,
-                                 int _stride, int _k, uint32_t _seed,
-                                 float _velocity_weight);
+                                 CommonPoseSettings _settings);
 
 }  // namespace hyperpose
