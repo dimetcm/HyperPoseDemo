@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "common/core/clip_player.h"
+#include "common/core/pose_match.h"
 #include "ozz/base/containers/vector.h"
 #include "ozz/base/maths/simd_math.h"
 #include "ozz/base/maths/soa_transform.h"
@@ -57,25 +58,18 @@ class ClipCrossfade {
   bool Sample(ozz::span<ozz::math::Float4x4> _models);
 
  private:
-  // Root motion placement of a clip: its root is rotated by yaw about Y,
-  // then shifted on the ground.
-  struct RootOffset {
-    float yaw = 0.f;
-    ozz::math::Float3 shift = ozz::math::Float3::zero();
-  };
-
   // A clip fading in over the older ones.
   struct Track {
     ClipPlayer clip;
-    RootOffset offset;
+    RootPlacement placement;  // Root motion: where it started.
     float age = 0.f;  // Since it started (s).
     ozz::vector<ozz::math::SoaTransform> locals;
   };
 
   // Samples the track's clip at its time into its locals, with the root
-  // aligned to the origin, or placed by its offset with root motion.
+  // aligned to the origin, or placed by its placement with root motion.
   bool SampleRoot(Track* _track);
-  // Sets the track's offset so that its root at its time lands on the
+  // Sets the track's placement so that its root at its time lands on the
   // character root (root_position_, root_heading_).
   void Anchor(Track* _track);
 

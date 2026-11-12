@@ -283,37 +283,11 @@ class PoseBlendApplication : public ozz::sample::Application {
     // heading).
     const auto& fa = slots_[0].features;
     const auto& fb = slots_[1].features;
-    const math::Float3 a_root = fa.root_positions[transition_.a_frame];
-    const math::Float3 b_root = fb.root_positions[transition_.b_frame];
-    align_angle_ = fa.root_headings[transition_.a_frame] -
-                   fb.root_headings[transition_.b_frame];
-    align_from_ = math::Float3(b_root.x, 0.f, b_root.z);
-    align_to_ = math::Float3(a_root.x, 0.f, a_root.z);
+    align_ = hyperpose::RootPlacement::Between(
+        fb.root_positions[transition_.b_frame], fb.root_headings[transition_.b_frame],
+        fa.root_positions[transition_.a_frame], fa.root_headings[transition_.a_frame]);
     time_ = LoopBegin();
     playing_ = true;
-  }
-
-  // Applies the B to A alignment to the root joint (joint 0, which has no
-  // parent so its local transform is model-space).
-  void AlignRoot(ozz::span<math::SoaTransform> _locals) const {
-    math::SoaTransform& soa = _locals[0];
-    math::Float3 t(math::GetX(soa.translation.x), math::GetX(soa.translation.y),
-                   math::GetX(soa.translation.z));
-    const math::Quaternion q(math::GetX(soa.rotation.x), math::GetX(soa.rotation.y),
-                             math::GetX(soa.rotation.z), math::GetX(soa.rotation.w));
-    t = hyperpose::RotateY(t - align_from_, align_angle_) + align_to_;
-    const math::Quaternion r =
-        math::Quaternion::FromAxisAngle(math::Float3::y_axis(), align_angle_) * q;
-    auto set = [](math::SimdFloat4& _v, float _f) {
-      _v = math::SetX(_v, math::simd_float4::Load1(_f));
-    };
-    set(soa.translation.x, t.x);
-    set(soa.translation.y, t.y);
-    set(soa.translation.z, t.z);
-    set(soa.rotation.x, r.x);
-    set(soa.rotation.y, r.y);
-    set(soa.rotation.z, r.z);
-    set(soa.rotation.w, r.w);
   }
 
   // Pose at sequence time _time: A, then crossfade, then B (aligned).
@@ -331,11 +305,11 @@ class PoseBlendApplication : public ozz::sample::Application {
       locals = a.locals();
     } else if (blend >= 1.f) {
       if (!b.SampleLocals(b_time)) return false;
-      AlignRoot(b.locals());
+      align_.ApplyToRoot(b.locals());
       locals = b.locals();
     } else {
       if (!a.SampleLocals(_time) || !b.SampleLocals(b_time)) return false;
-      AlignRoot(b.locals());
+      align_.ApplyToRoot(b.locals());
       ozz::animation::BlendingJob::Layer layers[2];
       layers[0].weight = 1.f - weight_;
       layers[0].transform = a.locals();
@@ -531,9 +505,7 @@ class PoseBlendApplication : public ozz::sample::Application {
   hyperpose::Transition transition_;
   int blend_frames_ = static_cast<int>(.4f * kMatchRate);
   float pending_blend_ = .4f;
-  float align_angle_ = 0.f;
-  math::Float3 align_from_ = math::Float3::zero();
-  math::Float3 align_to_ = math::Float3::zero();
+  hyperpose::RootPlacement align_;  // B onto A at the transition.
 
   // Heat map.
   std::vector<ImU32> map_colors_;

@@ -6,6 +6,7 @@
 
 #include "common/core/clip_player.h"
 #include "common/core/common_pose.h"
+#include "common/core/pose_match.h"
 #include "ozz/base/maths/simd_math.h"
 #include "ozz/base/span.h"
 
@@ -39,7 +40,7 @@ class ClipPreview {
   GuiResult Gui(PoseSetEntry* _entry, bool _busy);
 
  private:
-  ozz::math::Float4x4 anchor_ = ozz::math::Float4x4::identity();
+  RootPlacement placement_;  // Root motion anchor.
 };
 
 }  // namespace hyperpose

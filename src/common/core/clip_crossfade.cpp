@@ -6,7 +6,6 @@
 #include "ozz/animation/runtime/blending_job.h"
 #include "ozz/animation/runtime/local_to_model_job.h"
 #include "ozz/animation/runtime/skeleton.h"
-#include "ozz/base/maths/quaternion.h"
 
 namespace math = ozz::math;
 
@@ -16,30 +15,6 @@ namespace {
 // Most tracks blended at once; older ones are dropped (only with clips much
 // shorter than the blend).
 const size_t kMaxTracks = 8;
-
-// Root joint (joint 0: lane x of the first soa transform) translation and
-// rotation.
-void ReadRoot(const math::SoaTransform& _soa, math::Float3* _t, math::Quaternion* _q) {
-  *_t = math::Float3(math::GetX(_soa.translation.x), math::GetX(_soa.translation.y),
-                     math::GetX(_soa.translation.z));
-  *_q = math::Quaternion(math::GetX(_soa.rotation.x), math::GetX(_soa.rotation.y),
-                         math::GetX(_soa.rotation.z), math::GetX(_soa.rotation.w));
-}
-
-void WriteRoot(const math::Float3& _t, const math::Quaternion& _q, math::SoaTransform* _soa) {
-  using math::simd_float4::Load1;
-  _soa->translation.x = math::SetX(_soa->translation.x, Load1(_t.x));
-  _soa->translation.y = math::SetX(_soa->translation.y, Load1(_t.y));
-  _soa->translation.z = math::SetX(_soa->translation.z, Load1(_t.z));
-  _soa->rotation.x = math::SetX(_soa->rotation.x, Load1(_q.x));
-  _soa->rotation.y = math::SetX(_soa->rotation.y, Load1(_q.y));
-  _soa->rotation.z = math::SetX(_soa->rotation.z, Load1(_q.z));
-  _soa->rotation.w = math::SetX(_soa->rotation.w, Load1(_q.w));
-}
-
-math::Quaternion YawRotation(float _yaw) {
-  return math::Quaternion::FromAxisAngle(math::Float3::y_axis(), _yaw);
-}
 
 }  // namespace
 
@@ -101,11 +76,10 @@ void ClipCrossfade::Anchor(Track* _track) {
   }
   math::Float3 t;
   math::Quaternion q;
-  ReadRoot(_track->clip.locals()[0], &t, &q);
-  const float heading = RootHeading(math::Float4x4::FromQuaternion(q), heading_axis_);
-  _track->offset.yaw = root_heading_ - heading;
-  _track->offset.shift = root_position_ - RotateY(t, _track->offset.yaw);
-  _track->offset.shift.y = 0.f;
+  ReadRoot(_track->clip.locals(), &t, &q);
+  _track->placement =
+      RootPlacement::Between(t, RootHeading(math::Float4x4::FromQuaternion(q), heading_axis_),
+                             root_position_, root_heading_);
 }
 
 bool ClipCrossfade::SampleRoot(Track* _track) {
@@ -114,19 +88,18 @@ bool ClipCrossfade::SampleRoot(Track* _track) {
   }
   const auto locals = _track->clip.locals();
   std::copy(locals.begin(), locals.end(), _track->locals.begin());
-  math::Float3 t;
-  math::Quaternion q;
-  ReadRoot(_track->locals[0], &t, &q);
   if (root_motion) {
-    // Placed by the track offset: moves as the clip does.
-    const RootOffset& offset = _track->offset;
-    WriteRoot(RotateY(t, offset.yaw) + offset.shift, YawRotation(offset.yaw) * q,
-              &_track->locals[0]);
+    // Placed where the track started: moves as the clip does.
+    _track->placement.ApplyToRoot(make_span(_track->locals));
   } else {
     // Above the origin, facing the default heading, as AlignToOrigin does
     // in model space.
-    const float heading = RootHeading(math::Float4x4::FromQuaternion(q), heading_axis_);
-    WriteRoot(math::Float3(0.f, t.y, 0.f), YawRotation(-heading) * q, &_track->locals[0]);
+    math::Float3 t;
+    math::Quaternion q;
+    ReadRoot(make_span(_track->locals), &t, &q);
+    RootPlacement::Between(t, RootHeading(math::Float4x4::FromQuaternion(q), heading_axis_),
+                           math::Float3::zero(), 0.f)
+        .ApplyToRoot(make_span(_track->locals));
   }
   return true;
 }

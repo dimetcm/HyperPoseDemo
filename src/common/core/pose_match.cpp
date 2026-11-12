@@ -50,19 +50,69 @@ float RootHeading(const math::Float4x4& _root, int _axis) {
 }
 
 void AlignToOrigin(ozz::span<math::Float4x4> _models, int _axis) {
-  if (_models.empty()) {
-    return;
+  if (!_models.empty()) {
+    RootPlacement::ToOrigin(_models[0], _axis).ApplyToModels(_models);
   }
+}
+
+RootPlacement RootPlacement::Between(const math::Float3& _from, float _from_heading,
+                                     const math::Float3& _to, float _to_heading) {
+  RootPlacement placement;
+  placement.yaw = _to_heading - _from_heading;
+  placement.shift = _to - RotateY(_from, placement.yaw);
+  placement.shift.y = 0.f;  // Heights unchanged.
+  return placement;
+}
+
+RootPlacement RootPlacement::Between(const math::Float4x4& _from,
+                                     const math::Float4x4& _to, int _axis) {
+  math::Float3 from, to;
+  math::Store3PtrU(_from.cols[3], &from.x);
+  math::Store3PtrU(_to.cols[3], &to.x);
+  return Between(from, RootHeading(_from, _axis), to, RootHeading(_to, _axis));
+}
+
+RootPlacement RootPlacement::ToOrigin(const math::Float4x4& _root, int _axis) {
   math::Float3 root;
-  math::Store3PtrU(_models[0].cols[3], &root.x);
-  const float heading = RootHeading(_models[0], _axis);
-  const math::Float4x4 align =
+  math::Store3PtrU(_root.cols[3], &root.x);
+  return Between(root, RootHeading(_root, _axis), math::Float3::zero(), 0.f);
+}
+
+void RootPlacement::ApplyToModels(ozz::span<math::Float4x4> _models) const {
+  const math::Float4x4 placement =
+      math::Float4x4::Translation(math::simd_float4::Load(shift.x, 0.f, shift.z, 1.f)) *
       math::Float4x4::FromAxisAngle(math::simd_float4::y_axis(),
-                                    math::simd_float4::Load1(-heading)) *
-      math::Float4x4::Translation(math::simd_float4::Load(-root.x, 0.f, -root.z, 1.f));
-  for (auto& model : _models) {
-    model = align * model;
+                                    math::simd_float4::Load1(yaw));
+  for (math::Float4x4& model : _models) {
+    model = placement * model;
   }
+}
+
+void ReadRoot(ozz::span<const math::SoaTransform> _locals, math::Float3* _translation,
+              math::Quaternion* _rotation) {
+  const math::SoaTransform& soa = _locals[0];
+  *_translation = math::Float3(math::GetX(soa.translation.x), math::GetX(soa.translation.y),
+                               math::GetX(soa.translation.z));
+  *_rotation = math::Quaternion(math::GetX(soa.rotation.x), math::GetX(soa.rotation.y),
+                                math::GetX(soa.rotation.z), math::GetX(soa.rotation.w));
+}
+
+void RootPlacement::ApplyToRoot(ozz::span<math::SoaTransform> _locals) const {
+  math::Float3 t;
+  math::Quaternion q;
+  ReadRoot(_locals, &t, &q);
+  t = Apply(t);
+  q = Apply(q);
+  // Root joint: lane x of the first soa transform.
+  math::SoaTransform& soa = _locals[0];
+  using math::simd_float4::Load1;
+  soa.translation.x = math::SetX(soa.translation.x, Load1(t.x));
+  soa.translation.y = math::SetX(soa.translation.y, Load1(t.y));
+  soa.translation.z = math::SetX(soa.translation.z, Load1(t.z));
+  soa.rotation.x = math::SetX(soa.rotation.x, Load1(q.x));
+  soa.rotation.y = math::SetX(soa.rotation.y, Load1(q.y));
+  soa.rotation.z = math::SetX(soa.rotation.z, Load1(q.z));
+  soa.rotation.w = math::SetX(soa.rotation.w, Load1(q.w));
 }
 
 bool ExtractPoseFeatures(const ozz::animation::Animation& _animation,

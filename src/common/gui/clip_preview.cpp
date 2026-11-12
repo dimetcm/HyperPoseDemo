@@ -19,29 +19,13 @@ void ClipPreview::Anchor(float _time, const math::Float4x4* _character_root,
   if (!clip.loaded() || !clip.Sample(_time, make_span(models))) {
     return;
   }
-  math::Float3 target = math::Float3::zero();
-  float target_heading = 0.f;
-  if (_character_root) {
-    math::Store3PtrU(_character_root->cols[3], &target.x);
-    target_heading = RootHeading(*_character_root, _heading_axis);
-  }
-  math::Float3 root;
-  math::Store3PtrU(models[0].cols[3], &root.x);
-  const float heading = RootHeading(models[0], _heading_axis);
-  auto yaw = [](float _angle) {
-    return math::Float4x4::FromAxisAngle(math::simd_float4::y_axis(),
-                                         math::simd_float4::Load1(_angle));
-  };
-  anchor_ =
-      math::Float4x4::Translation(math::simd_float4::Load(target.x, 0.f, target.z, 1.f)) *
-      yaw(target_heading - heading) *
-      math::Float4x4::Translation(math::simd_float4::Load(-root.x, 0.f, -root.z, 1.f));
+  placement_ = _character_root
+                   ? RootPlacement::Between(models[0], *_character_root, _heading_axis)
+                   : RootPlacement::ToOrigin(models[0], _heading_axis);
 }
 
 void ClipPreview::ApplyAnchor(ozz::span<math::Float4x4> _models) const {
-  for (math::Float4x4& model : _models) {
-    model = anchor_ * model;
-  }
+  placement_.ApplyToModels(_models);
 }
 
 bool ClipPreview::Advance(float _dt, const PoseSetEntry* _entry) {

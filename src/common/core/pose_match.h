@@ -12,7 +12,9 @@
 #include <cmath>
 
 #include "ozz/base/containers/vector.h"
+#include "ozz/base/maths/quaternion.h"
 #include "ozz/base/maths/simd_math.h"
+#include "ozz/base/maths/soa_transform.h"
 #include "ozz/base/maths/vec_float.h"
 #include "ozz/base/span.h"
 
@@ -56,12 +58,51 @@ int HeadingAxis(const ozz::animation::Skeleton& _skeleton);
 
 // Moves a pose (joint model-space transforms, root first) so the root stands
 // above the origin, facing the default heading (heading 0 on _axis, see
-// HeadingAxis), so poses compare from the same viewpoint.
+// HeadingAxis), so poses compare from the same viewpoint (see
+// RootPlacement::ToOrigin).
 void AlignToOrigin(ozz::span<ozz::math::Float4x4> _models, int _axis);
 
 // Rotates _v about the Y axis by _angle radians (right handed, as
 // ozz::math::Quaternion::FromAxisAngle).
 ozz::math::Float3 RotateY(const ozz::math::Float3& _v, float _angle);
+
+// Places a pose on the ground: rotates it by yaw about the vertical axis (Y),
+// then moves it by shift on the ground. Made to take one root (position and
+// heading) onto another, heights unchanged: aligning a pose to the origin,
+// continuing a clip from where the character stands (root motion), lining up
+// two clips at a transition.
+struct RootPlacement {
+  float yaw = 0.f;  // Radians about Y.
+  ozz::math::Float3 shift = ozz::math::Float3::zero();  // y = 0.
+
+  // Takes a root at _from, heading _from_heading, onto _to, heading
+  // _to_heading (radians about Y).
+  static RootPlacement Between(const ozz::math::Float3& _from, float _from_heading,
+                               const ozz::math::Float3& _to, float _to_heading);
+  // Same between root joint model-space transforms, headings measured on
+  // _axis (see RootHeading).
+  static RootPlacement Between(const ozz::math::Float4x4& _from,
+                               const ozz::math::Float4x4& _to, int _axis);
+  // Takes _root above the origin, facing the default heading (0).
+  static RootPlacement ToOrigin(const ozz::math::Float4x4& _root, int _axis);
+
+  ozz::math::Float3 Apply(const ozz::math::Float3& _position) const {
+    return RotateY(_position, yaw) + shift;
+  }
+  ozz::math::Quaternion Apply(const ozz::math::Quaternion& _rotation) const {
+    return ozz::math::Quaternion::FromAxisAngle(ozz::math::Float3::y_axis(), yaw) *
+           _rotation;
+  }
+  // Places model-space joint transforms.
+  void ApplyToModels(ozz::span<ozz::math::Float4x4> _models) const;
+  // Places the root joint of local transforms (joint 0: having no parent,
+  // its local transform is in model space), which places the whole pose.
+  void ApplyToRoot(ozz::span<ozz::math::SoaTransform> _locals) const;
+};
+
+// Root joint (joint 0) local translation and rotation, from local transforms.
+void ReadRoot(ozz::span<const ozz::math::SoaTransform> _locals,
+              ozz::math::Float3* _translation, ozz::math::Quaternion* _rotation);
 
 // Pose differences between every frame of a (rows) and b (columns).
 struct PoseDifference {
