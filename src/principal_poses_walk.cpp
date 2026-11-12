@@ -68,6 +68,9 @@ namespace {
 using hyperpose::CommonPose;
 using hyperpose::PoseSetEntry;
 
+// Clip tags, in the pose set list and the tag set.
+const ImVec4 kTagColor(.55f, .8f, .55f, 1.f);
+
 
 }  // namespace
 
@@ -500,6 +503,9 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
                     pose.spread * 100.f, name.c_str(), frame.time,
                     library_.Description(name).c_str());
       ozz::log::Out() << line << std::endl;
+      if (!pose.tags.empty()) {
+        ozz::log::Out() << "      tags: " << hyperpose::PoseTagsText(pose) << std::endl;
+      }
       // Top transitions.
       const hyperpose::PoseExits& exits = result_.exits[c];
       ozz::log::Out() << "      ->" << hyperpose::PoseExitsText(exits, 4) << "  (" << exits.count
@@ -537,6 +543,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     // reads their durations.
     project_ = hyperpose::PoseProject();
     project_.settings = project.settings;
+    project_.tags = project.tags;
     int missing = 0;
     for (const PoseSetEntry& clip : project.clips) {
       const size_t size = project_.clips.size();
@@ -547,6 +554,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       }
       project_.clips.back().begin = clip.begin;
       project_.clips.back().end = clip.end;
+      project_.clips.back().tags = clip.tags;
     }
     project_path_ = _path;
     saved_project_ = missing ? project : project_;
@@ -702,7 +710,11 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
                               ImVec2(ImGui::CalcTextSize(label).x, 0.f))) {
           PreviewClip(project_.clips[i].path);
         }
-        ImGui::SetItemTooltip("Click to preview and trim.");
+        ImGui::SetItemTooltip("Click to preview, trim and tag.");
+        for (const std::string& tag : project_.clips[i].tags) {
+          ImGui::SameLine();
+          ImGui::TextColored(kTagColor, "[%s]", tag.c_str());
+        }
         const std::string& description = library_.Description(name);
         if (!description.empty()) {
           ImGui::SameLine();
@@ -711,6 +723,98 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
         ImGui::PopID();
       }
       ImGui::EndChild();
+    }
+    TagSetGui();
+  }
+
+  // The project's tag set: tags clips can be given (in the preview). Removing
+  // a tag removes it from the clips too.
+  void TagSetGui() {
+    char header[48];
+    std::snprintf(header, sizeof(header), "Tags (%d)###tags",
+                  static_cast<int>(project_.tags.size()));
+    if (!ImGui::TreeNode(header)) {
+      return;
+    }
+    int remove = -1;
+    for (size_t t = 0; t < project_.tags.size(); ++t) {
+      const std::string& tag = project_.tags[t];
+      const int count = static_cast<int>(
+          std::count_if(project_.clips.begin(), project_.clips.end(),
+                        [&](const PoseSetEntry& _clip) { return _clip.has_tag(tag); }));
+      ImGui::PushID(static_cast<int>(t));
+      if (t > 0) {
+        ImGui::SameLine();
+      }
+      ImGui::TextColored(kTagColor, "%s (%d)", tag.c_str(), count);
+      ImGui::SameLine(0.f, ImGui::GetStyle().ItemInnerSpacing.x);
+      if (ImGui::SmallButton("x")) {
+        remove = static_cast<int>(t);
+      }
+      ImGui::SetItemTooltip("Removes %s from the project and its %d clips.", tag.c_str(), count);
+      ImGui::PopID();
+    }
+    if (remove >= 0) {
+      const std::string tag = project_.tags[remove];
+      project_.tags.erase(project_.tags.begin() + remove);
+      for (PoseSetEntry& clip : project_.clips) {
+        clip.tags.erase(std::remove(clip.tags.begin(), clip.tags.end(), tag), clip.tags.end());
+      }
+      hyperpose::TagCommonPoses(project_.clips, &result_);
+    }
+    // New tag: no spaces (they separate tags in project files).
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10.f);
+    const bool enter = ImGui::InputTextWithHint("##new_tag", "new tag", new_tag_,
+                                                sizeof(new_tag_),
+                                                ImGuiInputTextFlags_EnterReturnsTrue |
+                                                    ImGuiInputTextFlags_CharsNoBlank);
+    ImGui::SameLine();
+    const std::string tag = new_tag_;
+    const bool exists =
+        std::find(project_.tags.begin(), project_.tags.end(), tag) != project_.tags.end();
+    ImGui::BeginDisabled(tag.empty() || exists);
+    if ((ImGui::Button("Add tag") || enter) && !tag.empty() && !exists) {
+      project_.tags.push_back(tag);
+      new_tag_[0] = '\0';
+    }
+    ImGui::EndDisabled();
+    if (exists) {
+      ImGui::SameLine();
+      ImGui::TextDisabled("already a tag");
+    }
+    ImGui::TreePop();
+  }
+
+  // Tags of a set clip: a checkbox per project tag.
+  void ClipTagsGui(PoseSetEntry* _entry) {
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Tags");
+    if (project_.tags.empty()) {
+      ImGui::SameLine();
+      ImGui::TextDisabled("none yet: add some under Pose set > Tags.");
+      return;
+    }
+    for (size_t t = 0; t < project_.tags.size(); ++t) {
+      const std::string& tag = project_.tags[t];
+      ImGui::SameLine();
+      // Wraps to the next line when the row is full.
+      const float width = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x +
+                          ImGui::CalcTextSize(tag.c_str()).x;
+      if (ImGui::GetContentRegionAvail().x < width) {
+        ImGui::NewLine();
+      }
+      bool on = _entry->has_tag(tag);
+      ImGui::PushID(static_cast<int>(t));
+      if (ImGui::Checkbox(tag.c_str(), &on)) {
+        if (on) {
+          _entry->tags.push_back(tag);
+        } else {
+          _entry->tags.erase(std::remove(_entry->tags.begin(), _entry->tags.end(), tag),
+                             _entry->tags.end());
+        }
+        hyperpose::TagCommonPoses(project_.clips, &result_);  // Poses follow.
+      }
+      ImGui::PopID();
     }
   }
 
@@ -767,7 +871,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     if (result_.poses.empty()) {
       return;
     }
-    if (!running && project_ != clustered_project_) {
+    if (!running && !project_.SameCommonPoses(clustered_project_)) {
       ImGui::TextColored(ImVec4(1.f, .7f, .3f, 1.f),
                          "Pose set, trims or settings changed: find common poses again.");
     }
@@ -776,7 +880,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
 
     // Common poses, most frames first.
     const float rows = std::min<float>(result_.poses.size(), 8.f) + 1.5f;
-    if (ImGui::BeginTable("poses", 4,
+    if (ImGui::BeginTable("poses", 5,
                           ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
                               ImGuiTableFlags_BordersInnerV,
                           ImVec2(0.f, rows * ImGui::GetTextLineHeightWithSpacing()))) {
@@ -785,6 +889,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       ImGui::TableSetupColumn("Share", ImGuiTableColumnFlags_WidthFixed);
       ImGui::TableSetupColumn("Spread", ImGuiTableColumnFlags_WidthFixed);
       ImGui::TableSetupColumn("Most typical frame", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableSetupColumn("Tags", ImGuiTableColumnFlags_WidthStretch);
       ImGui::TableHeadersRow();
       for (int c = 0; c < static_cast<int>(result_.poses.size()); ++c) {
         const CommonPose& pose = result_.poses[c];
@@ -807,6 +912,12 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
         const std::string& description = library_.Description(name);
         if (!description.empty()) {
           ImGui::SetItemTooltip("%s", description.c_str());
+        }
+        ImGui::TableNextColumn();
+        if (!pose.tags.empty()) {
+          ImGui::TextColored(kTagColor, "%s", hyperpose::PoseTagsText(pose).c_str());
+          ImGui::SetItemTooltip("Tags of the clips its frames come from, with the share\n"
+                                "of its frames (100%% left out).");
         }
       }
       ImGui::EndTable();
@@ -1181,6 +1292,9 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     if (result.add_to_set) {
       Add(preview_.clip.path());
     }
+    if (PoseSetEntry* entry = FindEntry(preview_.clip.path())) {
+      ClipTagsGui(entry);
+    }
     RootMotionGui();
     ImGui::Separator();
   }
@@ -1220,6 +1334,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   fs::path project_path_;  // Empty: untitled.
   hyperpose::PoseProject saved_project_;
   hyperpose::ProjectBar project_bar_;
+  char new_tag_[64] = {};  // Tag set: name of the tag to add.
   // Set and settings the common poses were found for, to flag stale ones.
   hyperpose::PoseProject clustered_project_;
   hyperpose::ClipSkeleton clip_skeleton_;

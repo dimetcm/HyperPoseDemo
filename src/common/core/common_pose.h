@@ -24,6 +24,12 @@ struct PoseSetEntry {
   float duration = 0.f;  // Of the whole clip (s), read when it's added.
   float begin = 0.f;
   float end = -1.f;  // Negative: clip end.
+  // Tags given to the clip, from its project's tag set (PoseProject::tags).
+  std::vector<std::string> tags;
+
+  bool has_tag(const std::string& _tag) const {
+    return std::find(tags.begin(), tags.end(), _tag) != tags.end();
+  }
 
   // End of the range used (s): the clip end when end < 0.
   float trim_end() const { return end < 0.f ? duration : std::min(end, duration); }
@@ -37,10 +43,12 @@ struct PoseSetEntry {
     end = _end >= duration - 1e-3f ? -1.f : _end;
   }
 
-  // Same clip and range (the duration comes from the clip).
-  bool operator==(const PoseSetEntry& _o) const {
+  // Same clip and range: what common poses are found from (the duration
+  // comes from the clip, tags don't count).
+  bool SameRange(const PoseSetEntry& _o) const {
     return path == _o.path && begin == _o.begin && end == _o.end;
   }
+  bool operator==(const PoseSetEntry& _o) const { return SameRange(_o) && tags == _o.tags; }
   bool operator!=(const PoseSetEntry& _o) const { return !(*this == _o); }
 };
 
@@ -55,6 +63,14 @@ struct CommonPose {
   };
   std::vector<Frame> frames;
   float spread = 0.f;  // RMS of frame distances (m).
+
+  // Tags of the clips its frames come from (PoseSetEntry::tags), with the
+  // share of its frames whose clip has the tag (0..1), most shared first.
+  struct Tag {
+    std::string name;
+    float share;
+  };
+  std::vector<Tag> tags;
 };
 
 // A place in a clip where it changes common pose. Every clip's transitions
@@ -134,6 +150,13 @@ float EnteredAt(const CommonPoseResult& _result, int _transition);
 std::string PoseName(int _pose);
 // The first _max edges out of a pose with their shares: " #3 60% end 20%".
 std::string PoseExitsText(const PoseExits& _exits, size_t _max);
+// A pose's tags with their shares: "walk left_foot 40%" (100% left out).
+std::string PoseTagsText(const CommonPose& _pose);
+
+// (Re)computes the tags of every pose of _result from _entries' tags (the
+// pose set it was found for, matched by clip path), as FindCommonPoses does:
+// to follow tag changes without finding the poses again.
+void TagCommonPoses(const std::vector<PoseSetEntry>& _entries, CommonPoseResult* _result);
 
 // Samples every entry at its own frame rate, and clusters every stride-th
 // frame (1: every frame) in common poses (see CommonPoseSettings). Poses are

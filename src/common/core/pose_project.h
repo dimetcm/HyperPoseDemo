@@ -10,12 +10,15 @@
 //   stride 1
 //   seed 1
 //   velocity_weight 0.1
+//   tag <name>                  (the project's tag set, one line per tag)
 //   clip <begin> <end> <path>
+//   tags <name> <name> ...      (optional: the previous clip's tags)
 //
 // In the file, clip paths are relative to the clip root (absolute if outside
 // it), with '/' separators; in memory, they're full paths. end < 0 means the
-// clip end.
+// clip end. Tag names have no spaces.
 
+#include <algorithm>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -28,9 +31,19 @@ namespace hyperpose {
 struct PoseProject {
   std::vector<PoseSetEntry> clips;  // Durations aren't saved.
   CommonPoseSettings settings;
+  // Tags clips can be given (none, one or more each), in display order.
+  std::vector<std::string> tags;
 
+  // Same clips, ranges and settings: the same common poses (tags aside).
+  bool SameCommonPoses(const PoseProject& _o) const {
+    return settings == _o.settings && clips.size() == _o.clips.size() &&
+           std::equal(clips.begin(), clips.end(), _o.clips.begin(),
+                      [](const PoseSetEntry& _a, const PoseSetEntry& _b) {
+                        return _a.SameRange(_b);
+                      });
+  }
   bool operator==(const PoseProject& _o) const {
-    return clips == _o.clips && settings == _o.settings;
+    return clips == _o.clips && settings == _o.settings && tags == _o.tags;
   }
   bool operator!=(const PoseProject& _o) const { return !(*this == _o); }
 };

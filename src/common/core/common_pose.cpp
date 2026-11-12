@@ -116,6 +116,49 @@ std::string PoseName(int _pose) {
   return _pose < 0 ? "end" : "#" + std::to_string(_pose + 1);
 }
 
+std::string PoseTagsText(const CommonPose& _pose) {
+  std::string text;
+  for (const CommonPose::Tag& tag : _pose.tags) {
+    text += (text.empty() ? "" : " ") + tag.name;
+    const int percent = static_cast<int>(std::lround(tag.share * 100.f));
+    if (percent < 100) {
+      text += " " + std::to_string(percent) + "%";
+    }
+  }
+  return text;
+}
+
+void TagCommonPoses(const std::vector<PoseSetEntry>& _entries, CommonPoseResult* _result) {
+  // Tags of each result clip, by path.
+  std::vector<const std::vector<std::string>*> clip_tags(_result->clips.size(), nullptr);
+  for (size_t c = 0; c < _result->clips.size(); ++c) {
+    for (const PoseSetEntry& entry : _entries) {
+      if (entry.path == _result->clips[c]) {
+        clip_tags[c] = &entry.tags;
+        break;
+      }
+    }
+  }
+  for (CommonPose& pose : _result->poses) {
+    std::map<std::string, int> counts;  // Frames per tag.
+    for (const CommonPose::Frame& frame : pose.frames) {
+      if (const std::vector<std::string>* tags = clip_tags[frame.clip]) {
+        for (const std::string& tag : *tags) {
+          ++counts[tag];
+        }
+      }
+    }
+    pose.tags.clear();
+    for (const auto& [name, count] : counts) {
+      pose.tags.push_back({name, static_cast<float>(count) / pose.frames.size()});
+    }
+    std::stable_sort(pose.tags.begin(), pose.tags.end(),
+                     [](const CommonPose::Tag& _a, const CommonPose::Tag& _b) {
+                       return _a.share > _b.share;
+                     });
+  }
+}
+
 std::string PoseExitsText(const PoseExits& _exits, size_t _max) {
   std::string text;
   for (size_t e = 0; e < std::min(_exits.edges.size(), _max); ++e) {
@@ -189,6 +232,7 @@ CommonPoseResult FindCommonPoses(std::vector<PoseSetEntry> _entries,
     result.poses.push_back(std::move(pose));
   }
   BuildTransitions(samples, labels, ranges, &result);
+  TagCommonPoses(_entries, &result);
   result.seconds = std::chrono::duration<double>(
                        std::chrono::steady_clock::now() - start)
                        .count();

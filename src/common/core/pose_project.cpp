@@ -40,6 +40,9 @@ bool SavePoseProject(const fs::path& _path, const PoseProject& _project,
          << "stride " << _project.settings.stride << "\n"
          << "seed " << _project.settings.seed << "\n"
          << "velocity_weight " << _project.settings.velocity_weight << "\n";
+    for (const std::string& tag : _project.tags) {
+      file << "tag " << tag << "\n";
+    }
     for (const PoseSetEntry& clip : _project.clips) {
       // Relative to the clip root, so projects survive moving the assets.
       fs::path path = clip.path.lexically_relative(_clip_root);
@@ -48,6 +51,13 @@ bool SavePoseProject(const fs::path& _path, const PoseProject& _project,
       }
       file << "clip " << clip.begin << " " << clip.end << " "
            << path.generic_string() << "\n";
+      if (!clip.tags.empty()) {
+        file << "tags";
+        for (const std::string& tag : clip.tags) {
+          file << " " << tag;
+        }
+        file << "\n";
+      }
     }
     if (!file) {
       *_error = "Failed writing " + temp.string();
@@ -116,6 +126,23 @@ bool LoadPoseProject(const fs::path& _path, const fs::path& _clip_root,
         clip.path = _clip_root / clip.path;
       }
       project.clips.push_back(clip);
+    } else if (key == "tag") {
+      std::string tag;
+      ok = static_cast<bool>(in >> tag);
+      if (ok && std::find(project.tags.begin(), project.tags.end(), tag) == project.tags.end()) {
+        project.tags.push_back(tag);
+      }
+    } else if (key == "tags") {
+      // The previous clip's, from the project's tag set.
+      ok = !project.clips.empty();
+      for (std::string tag; ok && in >> tag;) {
+        if (std::find(project.tags.begin(), project.tags.end(), tag) == project.tags.end()) {
+          project.tags.push_back(tag);  // Not declared: kept anyway.
+        }
+        if (!project.clips.back().has_tag(tag)) {
+          project.clips.back().tags.push_back(tag);
+        }
+      }
     }  // Unknown keys are skipped, for newer minor additions.
     if (!ok) {
       *_error = _path.filename().string() + ": bad line " + std::to_string(number);

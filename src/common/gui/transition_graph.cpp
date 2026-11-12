@@ -195,11 +195,13 @@ int TransitionGraph::Draw(const CommonPoseResult& _result, int _selected,
     const CommonPose::Frame& frame = pose.frames.front();
     const std::string name = _result.clips[frame.clip].stem().string();
     const std::string next = PoseExitsText(_result.exits[hovered], 4);
-    ImGui::SetTooltip("#%d: %.1f%% of frames, spread %.1f cm\n%s @ %.1fs  %s\nnext:%s",
+    const std::string tags = PoseTagsText(pose);
+    ImGui::SetTooltip("#%d: %.1f%% of frames, spread %.1f cm\n%s @ %.1fs  %s\nnext:%s%s%s",
                       hovered + 1, 100.f * pose.frames.size() / _result.num_frames,
                       pose.spread * 100.f, name.c_str(), frame.time,
                       _library.Description(name).c_str(),
-                      next.empty() ? " none" : next.c_str());
+                      next.empty() ? " none" : next.c_str(), tags.empty() ? "" : "\ntags: ",
+                      tags.c_str());
     if (clicked) {
       clicked_pose = hovered;
     }
