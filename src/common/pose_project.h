@@ -7,7 +7,7 @@
 //   # HyperPoseDemo project
 //   version 1
 //   clusters 12
-//   rate 10
+//   stride 1
 //   seed 1
 //   velocity_weight 0.1
 //   clip <begin> <end> <path>
@@ -32,13 +32,13 @@ struct PoseProject {
   };
   std::vector<Clip> clips;
   int clusters = 12;
-  float rate = 10.f;  // Frames sampled per second.
+  int stride = 1;  // Clusters every stride-th frame of the clips.
   int seed = 1;
   // Joint velocities against positions when clustering (seconds, 0: off).
   float velocity_weight = .1f;
 
   bool operator==(const PoseProject& _o) const {
-    return clips == _o.clips && clusters == _o.clusters && rate == _o.rate &&
+    return clips == _o.clips && clusters == _o.clusters && stride == _o.stride &&
            seed == _o.seed && velocity_weight == _o.velocity_weight;
   }
   bool operator!=(const PoseProject& _o) const { return !(*this == _o); }

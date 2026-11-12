@@ -25,6 +25,14 @@ namespace hyperpose {
 // keyframes. Returns false if the file isn't an ozz animation.
 bool ReadClipDuration(const char* _path, float* _duration);
 
+// Frame rate _animation was sampled at before its keyframes were optimized
+// (frames per second): the remaining key times all lie on that frame grid, so
+// it's the inverse of the shortest gap between them (the gap to the final key,
+// at the duration, aside). _fallback when it can't tell (fewer than two key
+// times).
+float AnimationFrameRate(const ozz::animation::Animation& _animation,
+                         float _fallback = 30.f);
+
 // Samples _animation at _ratio ([0,1]) into local transforms, then converts
 // them to model-space matrices.
 bool SamplePose(const ozz::animation::Animation& _animation,

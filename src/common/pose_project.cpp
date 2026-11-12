@@ -1,6 +1,7 @@
 #include "common/pose_project.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -36,7 +37,7 @@ bool SavePoseProject(const fs::path& _path, const PoseProject& _project,
     file << "# HyperPoseDemo project\n"
          << "version " << kVersion << "\n"
          << "clusters " << _project.clusters << "\n"
-         << "rate " << _project.rate << "\n"
+         << "stride " << _project.stride << "\n"
          << "seed " << _project.seed << "\n"
          << "velocity_weight " << _project.velocity_weight << "\n";
     for (const PoseProject::Clip& clip : _project.clips) {
@@ -88,8 +89,13 @@ bool LoadPoseProject(const fs::path& _path, PoseProject* _project,
       }
     } else if (key == "clusters") {
       ok = static_cast<bool>(in >> project.clusters);
+    } else if (key == "stride") {
+      ok = static_cast<bool>(in >> project.stride);
     } else if (key == "rate") {
-      ok = static_cast<bool>(in >> project.rate);
+      // Older projects: frames sampled per second, from 30 Hz clips.
+      float rate = 0.f;
+      ok = static_cast<bool>(in >> rate) && rate > 0.f;
+      project.stride = std::max(1, static_cast<int>(std::lround(30.f / rate)));
     } else if (key == "seed") {
       ok = static_cast<bool>(in >> project.seed);
     } else if (key == "velocity_weight") {

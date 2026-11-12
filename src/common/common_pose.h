@@ -66,10 +66,6 @@ struct PoseExits {
   }
 };
 
-// Frame rate of the per clip match features (CommonPoseResult::features),
-// for fine pose matching at runtime (see PoseWalk's best match blend).
-constexpr float kMatchRate = 30.f;
-
 // Shortest stay in a common pose that isn't a bounce (s).
 constexpr float kMinPoseStay = .2f;
 
@@ -79,7 +75,9 @@ struct CommonPoseResult {
   // Every clip's transitions in clip, then time order.
   std::vector<PoseTransition> transitions;
   std::vector<PoseExits> exits;  // Per pose, grouped from transitions.
-  // Per clip, pose features at kMatchRate (whole clip, trimming ignored).
+  // Per clip, pose features of every frame at the clip's own frame rate
+  // (see AnimationFrameRate; whole clip, trimming ignored). Clustering uses
+  // every _stride-th frame of them, the best match blend all of them.
   std::vector<PoseFeatures> features;
   int num_frames = 0;
   double seconds = 0.;
@@ -90,15 +88,15 @@ struct CommonPoseResult {
 // transition's time (the transition's own for an entry).
 float EnteredAt(const CommonPoseResult& _result, int _transition);
 
-// Samples every entry at _rate (frames per second), and clusters the poses in
-// _k common poses. Poses are compared by joint positions plus, when
+// Samples every entry at its own frame rate, and clusters every _stride-th
+// frame (1: every frame) in _k common poses. Poses are compared by joint positions plus, when
 // _velocity_weight (seconds) > 0, joint velocities times _velocity_weight, so
 // the same pose moving in opposite directions can split; distances are the
 // root of the mean per joint squared difference. Only reads its arguments, so
 // it can run on a worker thread.
 CommonPoseResult FindCommonPoses(std::vector<PoseSetEntry> _entries,
                                  const ozz::animation::Skeleton* _skeleton,
-                                 float _rate, int _k, uint32_t _seed,
+                                 int _stride, int _k, uint32_t _seed,
                                  float _velocity_weight);
 
 }  // namespace hyperpose

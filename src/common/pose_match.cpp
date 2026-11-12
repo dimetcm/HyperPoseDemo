@@ -71,7 +71,9 @@ bool ExtractPoseFeatures(const ozz::animation::Animation& _animation,
   PoseFeatures& f = *_features;
   const float duration = _animation.duration();
   f.frame_rate = _frame_rate;
-  f.num_frames = std::max(1, static_cast<int>(duration * _frame_rate) + 1);
+  // Frames on the grid up to the end (the epsilon keeps the last frame when
+  // the duration is a whole number of frames, despite rounding).
+  f.num_frames = std::max(1, static_cast<int>(duration * _frame_rate + 1e-3f) + 1);
   f.num_joints = _skeleton.num_joints();
   f.positions.resize(f.num_frames * f.num_joints);
   f.velocities.resize(f.num_frames * f.num_joints);

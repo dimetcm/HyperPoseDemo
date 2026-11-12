@@ -6,6 +6,7 @@
 #include <map>
 #include <utility>
 
+#include "common/anim_utils.h"
 #include "common/pose_cluster.h"
 #include "common/pose_match.h"
 #include "framework/utils.h"
@@ -31,13 +32,11 @@ struct Sample {
 void BuildTransitions(const std::vector<Sample>& _samples,
                       const std::vector<int>& _labels,
                       const std::vector<std::pair<float, float>>& _ranges,
-                      float _rate, CommonPoseResult* _result) {
+                      CommonPoseResult* _result) {
   struct Run {
     int pose;
     int first;  // Sample index.
-    int length;
   };
-  const int min_length = std::max(1, static_cast<int>(std::ceil(kMinPoseStay * _rate)));
   for (size_t begin = 0; begin < _samples.size();) {
     const int clip = _samples[begin].clip;
     size_t end = begin;
@@ -51,14 +50,17 @@ void BuildTransitions(const std::vector<Sample>& _samples,
       while (j < end && _labels[j] == _labels[i]) {
         ++j;
       }
-      all.push_back({_labels[i], static_cast<int>(i), static_cast<int>(j - i)});
+      all.push_back({_labels[i], static_cast<int>(i)});
       i = j;
     }
     // Without bounces, and merged when consecutive in a pose.
     std::vector<Run> runs;
     for (size_t r = 0; r < all.size(); ++r) {
-      const bool bounce = all[r].length < min_length && !runs.empty() &&
-                          r + 1 < all.size() && all[r + 1].pose == runs.back().pose;
+      // A run lasts until the next one starts.
+      const bool bounce = !runs.empty() && r + 1 < all.size() &&
+                          all[r + 1].pose == runs.back().pose &&
+                          _samples[all[r + 1].first].time - _samples[all[r].first].time <
+                              kMinPoseStay - 1e-4f;
       if (bounce || (!runs.empty() && runs.back().pose == all[r].pose)) {
         continue;
       }
@@ -108,34 +110,32 @@ float EnteredAt(const CommonPoseResult& _result, int _transition) {
 
 CommonPoseResult FindCommonPoses(std::vector<PoseSetEntry> _entries,
                                  const ozz::animation::Skeleton* _skeleton,
-                                 float _rate, int _k, uint32_t _seed,
+                                 int _stride, int _k, uint32_t _seed,
                                  float _velocity_weight) {
+  _stride = std::max(_stride, 1);
   const auto start = std::chrono::steady_clock::now();
   CommonPoseResult result;
   std::vector<Sample> samples;  // Clip and time of each pose.
   PoseSamples poses;            // Pose features of each sample.
   std::vector<std::pair<float, float>> ranges;  // Per clip, sampled.
   ozz::animation::Animation animation;
-  PoseFeatures features;
   for (size_t e = 0; e < _entries.size(); ++e) {
     const PoseSetEntry& entry = _entries[e];
     result.clips.push_back(entry.path);
+    result.features.emplace_back();
+    PoseFeatures& features = result.features.back();
     if (!ozz::sample::LoadAnimation(entry.path.string().c_str(), &animation) ||
         animation.num_tracks() != _skeleton->num_joints() ||
-        !ExtractPoseFeatures(animation, *_skeleton, _rate, &features)) {
+        !ExtractPoseFeatures(animation, *_skeleton, AnimationFrameRate(animation),
+                             &features)) {
       result.error = "Failed to load " + entry.path.filename().string();
-      return result;
-    }
-    result.features.emplace_back();
-    if (!ExtractPoseFeatures(animation, *_skeleton, kMatchRate, &result.features.back())) {
-      result.error = "Failed to sample " + entry.path.filename().string();
       return result;
     }
     const float end = entry.end < 0.f ? animation.duration()
                                       : std::min(entry.end, animation.duration());
     ranges.push_back({entry.begin, end});
-    for (int frame = 0; frame < features.num_frames; ++frame) {
-      const float time = frame / _rate;
+    for (int frame = 0; frame < features.num_frames; frame += _stride) {
+      const float time = frame / features.frame_rate;
       if (time < entry.begin || time > end) {
         continue;
       }
@@ -156,7 +156,7 @@ CommonPoseResult FindCommonPoses(std::vector<PoseSetEntry> _entries,
     }
     result.poses.push_back(std::move(pose));
   }
-  BuildTransitions(samples, labels, ranges, _rate, &result);
+  BuildTransitions(samples, labels, ranges, &result);
   result.seconds = std::chrono::duration<double>(
                        std::chrono::steady_clock::now() - start)
                        .count();

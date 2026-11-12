@@ -9,6 +9,7 @@
 #include <cmath>
 #include <filesystem>
 #include <future>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -62,12 +63,6 @@ namespace {
 using hyperpose::CommonPose;
 using hyperpose::PoseSetEntry;
 
-// Frame rate the clips were converted at (Tools/convert_fbx.py), for frame
-// numbers in debug text.
-const float kClipFrameRate = 30.f;
-
-const float kRates[] = {5.f, 10.f, 15.f};
-const char* kRateLabels[] = {"5 Hz", "10 Hz", "15 Hz"};
 
 }  // namespace
 
@@ -174,6 +169,20 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   }
 
 
+  // Frame rate of _clip (see AnimationFrameRate), from the common pose
+  // features or the previewed clip; 30 if neither has it.
+  float FrameRate(const fs::path& _clip) const {
+    for (size_t c = 0; c < result_.clips.size() && c < result_.features.size(); ++c) {
+      if (result_.clips[c] == _clip) {
+        return result_.features[c].frame_rate;
+      }
+    }
+    if (clip_.loaded() && clip_.path() == _clip) {
+      return hyperpose::AnimationFrameRate(clip_.animation());
+    }
+    return 30.f;
+  }
+
   // Queues a debug label above a pose: clip, time / duration (if known, >= 0)
   // and frame number at the clips frame rate.
   void AddLabel(const math::Float4x4& _transform,
@@ -195,12 +204,13 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
                      &anchor.x);
 
     char text[256];
-    const int frame = static_cast<int>(_time * kClipFrameRate + .5f);
+    const float rate = FrameRate(_clip);
+    const int frame = static_cast<int>(_time * rate + .5f);
     if (_duration >= 0.f) {
       std::snprintf(text, sizeof(text), "%s%s\n%.1f/%.1fs\nf %d/%d",
                     _prefix.c_str(), _clip.stem().string().c_str(), _time,
                     _duration, frame,
-                    static_cast<int>(_duration * kClipFrameRate + .5f));
+                    static_cast<int>(_duration * rate + .5f));
     } else {
       std::snprintf(text, sizeof(text), "%s%s\n%.1fs\nf %d", _prefix.c_str(),
                     _clip.stem().string().c_str(), _time, frame);
@@ -373,7 +383,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     status_.clear();
     clustered_project_ = CurrentProject();
     job_ = std::async(std::launch::async, hyperpose::FindCommonPoses, set_, &skeleton(),
-                      kRates[rate_], k_, static_cast<uint32_t>(seed_),
+                      stride_, k_, static_cast<uint32_t>(seed_),
                       velocity_weight_);
   }
 
@@ -405,10 +415,20 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       ozz::log::Err() << result_.error << std::endl;
       return;
     }
+    // Clip frame rates, as detected.
+    std::map<float, int> rates;
+    for (const hyperpose::PoseFeatures& features : result_.features) {
+      ++rates[features.frame_rate];
+    }
+    std::string rates_text;
+    for (const auto& [rate, clips] : rates) {
+      rates_text += (rates_text.empty() ? "" : ", ") + std::to_string(clips) + " at " +
+                    std::to_string(static_cast<int>(rate)) + " Hz";
+    }
     ozz::log::Out() << result_.poses.size() << " common poses of "
                     << result_.num_frames << " frames from "
-                    << result_.clips.size() << " clips in " << result_.seconds
-                    << "s:" << std::endl;
+                    << result_.clips.size() << " clips (" << rates_text << ") in "
+                    << result_.seconds << "s:" << std::endl;
     for (size_t c = 0; c < result_.poses.size(); ++c) {
       const CommonPose& pose = result_.poses[c];
       const CommonPose::Frame& frame = pose.frames.front();
@@ -440,7 +460,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       project.clips.push_back({path, entry.begin, entry.end});
     }
     project.clusters = k_;
-    project.rate = kRates[rate_];
+    project.stride = stride_;
     project.seed = seed_;
     project.velocity_weight = velocity_weight_;
     return project;
@@ -456,7 +476,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   void NewProject() {
     set_.clear();
     k_ = 12;
-    rate_ = 1;
+    stride_ = hyperpose::PoseProject().stride;
     seed_ = 1;
     velocity_weight_ = hyperpose::PoseProject().velocity_weight;
     project_path_.clear();
@@ -490,12 +510,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       set_.back().end = clip.end;
     }
     k_ = std::clamp(project.clusters, 2, 64);
-    rate_ = 0;
-    for (int i = 0; i < IM_ARRAYSIZE(kRates); ++i) {
-      if (std::fabs(kRates[i] - project.rate) < std::fabs(kRates[rate_] - project.rate)) {
-        rate_ = i;
-      }
-    }
+    stride_ = std::clamp(project.stride, 1, kMaxStride);
     seed_ = project.seed;
     velocity_weight_ = std::max(0.f, project.velocity_weight);
     project_path_ = _path;
@@ -780,8 +795,11 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     ImGui::SliderInt("Clusters", &k_, 2, 64);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(half * .5f);
-    ImGui::Combo("Rate", &rate_, kRateLabels, IM_ARRAYSIZE(kRateLabels));
-    ImGui::SetItemTooltip("Frames sampled per second of animation.");
+    ImGui::SliderInt("Step", &stride_, 1, kMaxStride,
+                     stride_ == 1 ? "every frame" : "every %d frames");
+    ImGui::SetItemTooltip(
+        "Clip frames clustered: every frame, or every n-th to cluster large\n"
+        "sets faster. Each clip's frame rate is detected from its keys.");
     ImGui::SetNextItemWidth(half);
     ImGui::InputInt("Seed", &seed_);
     ImGui::SameLine();
@@ -1587,7 +1605,8 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
 
   // Clustering.
   int k_ = 12;
-  int rate_ = 1;  // kRates index.
+  int stride_ = 1;  // Clusters every stride_-th frame.
+  static constexpr int kMaxStride = 10;
   int seed_ = 1;
   // Joint velocities against positions (seconds, 0: positions only).
   float velocity_weight_ = hyperpose::PoseProject().velocity_weight;

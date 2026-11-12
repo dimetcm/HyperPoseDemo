@@ -1,6 +1,9 @@
 #include "common/anim_utils.h"
 
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <limits>
 
 #include "framework/mesh.h"
 #include "ozz/animation/runtime/animation.h"
@@ -11,6 +14,29 @@
 #include "ozz/base/maths/soa_transform.h"
 
 namespace hyperpose {
+
+float AnimationFrameRate(const ozz::animation::Animation& _animation,
+                         float _fallback) {
+  // Key times are stored as ratios of the duration, sorted. The last key is
+  // at the duration, which may fall between two frames (a source clip
+  // resampled at another rate), so the gap before it is skipped when there
+  // are others.
+  const auto ratios = _animation.timepoints();
+  const float duration = _animation.duration();
+  const size_t end = ratios.size() > 2 ? ratios.size() - 1 : ratios.size();
+  float gap = std::numeric_limits<float>::max();
+  for (size_t i = 1; i < end; ++i) {
+    const float seconds = (ratios[i] - ratios[i - 1]) * duration;
+    if (seconds > 1e-4f) {  // Skips duplicates from rounding.
+      gap = std::min(gap, seconds);
+    }
+  }
+  if (gap == std::numeric_limits<float>::max()) {
+    return _fallback;
+  }
+  const float rate = std::round(1.f / gap);
+  return rate >= 1.f && rate <= 1000.f ? rate : _fallback;
+}
 
 bool ReadClipDuration(const char* _path, float* _duration) {
   ozz::io::File file(_path, "rb");
