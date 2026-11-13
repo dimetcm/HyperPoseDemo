@@ -1212,6 +1212,12 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
         "Share of a pose's frames from tagged clips for it to count as tagged\n"
         "(ringed green in the transition graph). If no pose reaches it, the\n"
         "poses with the highest share count.");
+    ImGui::SameLine();
+    ImGui::Checkbox("follow clip", &walk_.follow_clip);
+    ImGui::SetItemTooltip(
+        "Heads for the reachable tagged pose with the best tag share, and once\n"
+        "a clip steps into the tag, keeps playing that clip to its end (no\n"
+        "blends); at its end, searches again from where it ended.");
     // Status, on its own line.
     if (!walk_.active() || target.empty()) {
       ImGui::TextDisabled(target.empty() ? "no target tag" : "heads for %s when walking",
@@ -1233,6 +1239,10 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       case Tag::kUnreachable:
         ImGui::TextColored(ImVec4(1.f, .7f, .3f, 1.f), "%s unreachable: random walk",
                            target.c_str());
+        break;
+      case Tag::kFollowing:
+        ImGui::TextColored(kTagColor, "in %s, following %s", target.c_str(),
+                           result_.clips[walk_.segment().clip].stem().string().c_str());
         break;
       case Tag::kOff:
         ImGui::TextDisabled("heading for %s from the next pick", target.c_str());

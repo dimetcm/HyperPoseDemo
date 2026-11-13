@@ -45,6 +45,8 @@ void PoseWalk::Stop() {
   result_ = nullptr;
   segment_ = Segment();
   pending_ = false;
+  following_ = false;
+  tag_path_.clear();
   // Loaded clips may not match the next skeleton.
   crossfade_.Clear();
 }
@@ -53,6 +55,33 @@ bool PoseWalk::Pick(int _from, bool _after_end, Segment* _segment) {
   Segment& segment = *_segment;
   segment = Segment();
   segment.after_end = _after_end;
+  // Follow clip: once a tagged clip steps into the tag, it plays on,
+  // transition after transition, to its end (then a new search). An
+  // untagged clip isn't followed: the next step picks a tagged one if any.
+  auto clip_tagged = [&](int _clip) {
+    const auto& tags = result_->clip_tags[_clip];
+    return std::find(tags.begin(), tags.end(), target_tag) != tags.end();
+  };
+  if (!target_tag.empty() && follow_clip && !_after_end && segment_.transition >= 0 &&
+      segment_.to == _from &&
+      (following_ || (TaggedPoses(*result_)[_from] && clip_tagged(segment_.clip)))) {
+    const int index = segment_.transition + 1;
+    if (index < static_cast<int>(result_->transitions.size()) &&
+        result_->transitions[index].clip == segment_.clip) {
+      const PoseTransition& transition = result_->transitions[index];
+      following_ = true;
+      tag_path_.clear();
+      segment.transition = index;
+      segment.from = _from;
+      segment.to = transition.to;
+      segment.clip = transition.clip;
+      segment.time = transition.time;
+      segment.start = segment_.time;  // Where the clip is: plays on.
+      segment.tag = Segment::Tag::kFollowing;
+      return true;
+    }
+  }
+  following_ = false;
   // Right after a clip end, only transitions to a pose, so the walk goes on
   // instead of ending again.
   auto usable = [&](const PoseEdge& _edge) { return !_after_end || _edge.to >= 0; };
@@ -171,17 +200,21 @@ int PoseWalk::BestTransition(const PoseEdge& _edge) const {
   return best;
 }
 
-std::vector<bool> PoseWalk::TaggedPoses(const CommonPoseResult& _result) const {
+std::vector<float> PoseWalk::TagShares(const CommonPoseResult& _result) const {
   std::vector<float> shares(_result.poses.size(), 0.f);
-  float most = 0.f;
   for (size_t p = 0; p < shares.size() && !target_tag.empty(); ++p) {
     for (const CommonPose::Tag& tag : _result.poses[p].tags) {
       if (tag.name == target_tag) {
         shares[p] = tag.share;
-        most = std::max(most, tag.share);
       }
     }
   }
+  return shares;
+}
+
+std::vector<bool> PoseWalk::TaggedPoses(const CommonPoseResult& _result) const {
+  const std::vector<float> shares = TagShares(_result);
+  const float most = shares.empty() ? 0.f : *std::max_element(shares.begin(), shares.end());
   // The threshold if any pose reaches it, else the highest share.
   const float threshold = std::min(tag_threshold, most);
   std::vector<bool> tagged(shares.size(), false);
@@ -250,8 +283,17 @@ bool PoseWalk::PlanTagPath(int _from) {
     if (targets.empty()) {
       continue;
     }
-    const int target =
-        targets[std::uniform_int_distribution<size_t>(0, targets.size() - 1)(rng_)];
+    int target = targets[std::uniform_int_distribution<size_t>(0, targets.size() - 1)(rng_)];
+    if (follow_clip) {
+      // The best tag share, then the smoothest path.
+      const std::vector<float> shares = TagShares(*result_);
+      for (int candidate : targets) {
+        if (shares[candidate] > shares[target] + 1e-6f ||
+            (shares[candidate] > shares[target] - 1e-6f && cost[candidate] < cost[target])) {
+          target = candidate;
+        }
+      }
+    }
     // Back along the predecessors to the pose reached from _from.
     tag_path_.assign(1, target);
     for (int p = target; previous[p] != _from && tag_path_.size() <= static_cast<size_t>(count);) {
@@ -271,16 +313,18 @@ void PoseWalk::Plan(float _now) {
   const PoseFeatures& a = result_->features[segment_.clip];
   const PoseFeatures& b = result_->features[next.clip];
   auto frame = &PoseWalk::FeatureFrame;
-  if (!best_match) {
-    next.difference = PoseFrameDifference(a, frame(a, segment_.time), b,
-                                          frame(b, next.start), velocity_weight);
-    return;
-  }
-  if (next.clip == segment_.clip && next.transition == segment_.transition + 1) {
-    // Carries on in the same clip: no blend.
+  // Carries on in the same clip: no blend. Always with best match; else
+  // when it starts where the clip already is (a stay within max_stay).
+  if (next.clip == segment_.clip && next.transition == segment_.transition + 1 &&
+      (best_match || next.start <= segment_.time + 1e-4f)) {
     next.continued = true;
     next.start = segment_.time;
     next.difference = 0.f;
+    return;
+  }
+  if (!best_match) {
+    next.difference = PoseFrameDifference(a, frame(a, segment_.time), b,
+                                          frame(b, next.start), velocity_weight);
     return;
   }
   // Closest pair: this clip from now until match_horizon past its transition,

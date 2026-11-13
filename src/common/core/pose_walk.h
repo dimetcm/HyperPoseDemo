@@ -70,6 +70,13 @@ class PoseWalk {
   float tag_threshold = .5f;
   // Per pose of _result, whether it counts as tagged (see tag_threshold).
   std::vector<bool> TaggedPoses(const CommonPoseResult& _result) const;
+  // Per pose of _result, its share of frames from clips with target_tag.
+  std::vector<float> TagShares(const CommonPoseResult& _result) const;
+  // Follow clip: the target is the reachable tagged pose with the best tag
+  // share (then the smoothest path), and once a step into the tag is made,
+  // that clip plays on to its end, transition after transition, without
+  // blends; at its end, a new search from where it ended.
+  bool follow_clip = false;
 
   // Starts walking from _pose (-1: a random one, weighted by frames). _result
   // and _skeleton must outlive the walk (or Stop it before they change).
@@ -110,6 +117,7 @@ class PoseWalk {
       kSeeking,      // From an untagged pose, on the path to a tagged one.
       kInTag,        // From a tagged pose, on to the next target.
       kUnreachable,  // No tagged pose reachable: random walk.
+      kFollowing,    // Follow clip: the clip that stepped into the tag plays on.
     };
     Tag tag = Tag::kOff;
   };
@@ -168,6 +176,7 @@ class PoseWalk {
   float blend_at_ = 0.f;
   BlendStats stats_;
   std::vector<int> tag_path_;
+  bool following_ = false;  // Follow clip: playing a clip on.
   // The tag and threshold tag_path_ was planned for.
   std::string planned_tag_;
   float planned_threshold_ = -1.f;
