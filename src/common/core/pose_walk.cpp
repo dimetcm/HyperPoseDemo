@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <queue>
+#include <utility>
 #include <vector>
 
 #include "common/core/pose_match.h"
@@ -80,10 +82,38 @@ bool PoseWalk::Pick(int _from, bool _after_end, Segment* _segment) {
   for (const PoseEdge& edge : exits.edges) {
     weights.push_back(usable(edge) ? static_cast<double>(edge.transitions.size()) : 0.);
   }
+  if (!target_tag.empty()) {
+    // The next step of the path to the current target, or the first of a
+    // path to a new random target (reached, or off the path: jumps, a tag
+    // or threshold change).
+    if (planned_tag_ != target_tag || planned_threshold_ != tag_threshold) {
+      tag_path_.clear();
+    }
+    int next = -1;
+    const auto at = std::find(tag_path_.begin(), tag_path_.end(), _from);
+    if (at != tag_path_.end() && at + 1 != tag_path_.end()) {
+      next = *(at + 1);
+    } else if (PlanTagPath(_from)) {
+      next = tag_path_[1];
+    }
+    if (next >= 0) {
+      for (size_t e = 0; e < exits.edges.size(); ++e) {
+        weights[e] = exits.edges[e].to == next ? weights[e] : 0.;
+      }
+      segment.tag = TaggedPoses(*result_)[_from] ? Segment::Tag::kInTag
+                                                 : Segment::Tag::kSeeking;
+    } else {
+      tag_path_.clear();
+      segment.tag = Segment::Tag::kUnreachable;
+    }
+  }
   const PoseEdge& edge =
       exits.edges[std::discrete_distribution<int>(weights.begin(), weights.end())(rng_)];
-  const int index = edge.transitions[std::uniform_int_distribution<size_t>(
-      0, edge.transitions.size() - 1)(rng_)];
+  // Which clip example: the best fitting one with a target tag, else random.
+  const int index = !target_tag.empty()
+                        ? BestTransition(edge)
+                        : edge.transitions[std::uniform_int_distribution<size_t>(
+                              0, edge.transitions.size() - 1)(rng_)];
   const PoseTransition& transition = result_->transitions[index];
   segment.transition = index;
   segment.from = _from;
@@ -94,15 +124,153 @@ bool PoseWalk::Pick(int _from, bool _after_end, Segment* _segment) {
   return true;
 }
 
+float PoseWalk::PoseDifference(int _a, int _b) const {
+  const CommonPose::Frame& a = result_->poses[_a].frames.front();
+  const CommonPose::Frame& b = result_->poses[_b].frames.front();
+  const PoseFeatures& fa = result_->features[a.clip];
+  const PoseFeatures& fb = result_->features[b.clip];
+  return PoseFrameDifference(fa, FeatureFrame(fa, a.time), fb, FeatureFrame(fb, b.time),
+                             velocity_weight);
+}
+
+int PoseWalk::FeatureFrame(const PoseFeatures& _features, float _time) {
+  return std::clamp(static_cast<int>(std::lround(_time * _features.frame_rate)), 0,
+                    _features.num_frames - 1);
+}
+
+int PoseWalk::BestTransition(const PoseEdge& _edge) const {
+  auto tagged_clip = [&](int _transition) {
+    const auto& tags = result_->clip_tags[result_->transitions[_transition].clip];
+    return std::find(tags.begin(), tags.end(), target_tag) != tags.end();
+  };
+  const bool any_tagged = std::any_of(_edge.transitions.begin(), _edge.transitions.end(),
+                                      tagged_clip);
+  int best = _edge.transitions.front();
+  float best_score = std::numeric_limits<float>::max();
+  for (int index : _edge.transitions) {
+    if (any_tagged && !tagged_clip(index)) {
+      continue;
+    }
+    const PoseTransition& transition = result_->transitions[index];
+    const float start = std::max(EnteredAt(*result_, index), transition.time - max_stay);
+    float score;
+    if (segment_.clip >= 0) {
+      // Closest to the current clip where it reaches the next pose (blend).
+      const PoseFeatures& a = result_->features[segment_.clip];
+      const PoseFeatures& b = result_->features[transition.clip];
+      score = PoseFrameDifference(a, FeatureFrame(a, segment_.time), b,
+                                  FeatureFrame(b, start), velocity_weight);
+    } else {
+      score = -(transition.time - start);  // First segment: the longest stay.
+    }
+    if (score < best_score) {
+      best_score = score;
+      best = index;
+    }
+  }
+  return best;
+}
+
+std::vector<bool> PoseWalk::TaggedPoses(const CommonPoseResult& _result) const {
+  std::vector<float> shares(_result.poses.size(), 0.f);
+  float most = 0.f;
+  for (size_t p = 0; p < shares.size() && !target_tag.empty(); ++p) {
+    for (const CommonPose::Tag& tag : _result.poses[p].tags) {
+      if (tag.name == target_tag) {
+        shares[p] = tag.share;
+        most = std::max(most, tag.share);
+      }
+    }
+  }
+  // The threshold if any pose reaches it, else the highest share.
+  const float threshold = std::min(tag_threshold, most);
+  std::vector<bool> tagged(shares.size(), false);
+  for (size_t p = 0; p < shares.size(); ++p) {
+    tagged[p] = shares[p] > 0.f && shares[p] >= threshold - 1e-6f;
+  }
+  return tagged;
+}
+
+void PoseWalk::Paths(int _from, const std::vector<bool>* _through, std::vector<double>* _cost,
+                     std::vector<int>* _previous) const {
+  const int count = static_cast<int>(result_->poses.size());
+  std::vector<double>& cost = *_cost;
+  std::vector<int>& previous = *_previous;
+  cost.assign(count, std::numeric_limits<double>::infinity());
+  previous.assign(count, -1);
+  std::vector<bool> done(count, false);
+  using Entry = std::pair<double, int>;  // Cost, pose.
+  std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> open;
+  auto relax = [&](int _pose, double _cost) {
+    for (const PoseEdge& edge : result_->exits[_pose].edges) {
+      if (edge.to < 0 || (_through && !(*_through)[edge.to])) {
+        continue;
+      }
+      const double to_cost = _cost + PoseDifference(_pose, edge.to);
+      if (to_cost < cost[edge.to]) {
+        cost[edge.to] = to_cost;
+        previous[edge.to] = _pose;
+        open.push({to_cost, edge.to});
+      }
+    }
+  };
+  // _from isn't settled at 0: reached again only through a loop.
+  relax(_from, 0.);
+  while (!open.empty()) {
+    const auto [at_cost, pose] = open.top();
+    open.pop();
+    if (done[pose] || at_cost > cost[pose]) {
+      continue;
+    }
+    done[pose] = true;
+    relax(pose, at_cost);
+  }
+}
+
+bool PoseWalk::PlanTagPath(int _from) {
+  tag_path_.clear();
+  planned_tag_ = target_tag;
+  planned_threshold_ = tag_threshold;
+  const std::vector<bool> tagged = TaggedPoses(*result_);
+  const int count = static_cast<int>(tagged.size());
+  // Through tagged poses only if possible, else through any.
+  for (const std::vector<bool>* through : {&tagged, static_cast<const std::vector<bool>*>(nullptr)}) {
+    std::vector<double> cost;
+    std::vector<int> previous;
+    Paths(_from, through, &cost, &previous);
+    std::vector<int> targets;
+    for (int p = 0; p < count; ++p) {
+      if (tagged[p] && p != _from && cost[p] < std::numeric_limits<double>::infinity()) {
+        targets.push_back(p);
+      }
+    }
+    if (targets.empty() && tagged[_from] && cost[_from] < std::numeric_limits<double>::infinity()) {
+      targets.push_back(_from);  // The only one: back to it through a loop.
+    }
+    if (targets.empty()) {
+      continue;
+    }
+    const int target =
+        targets[std::uniform_int_distribution<size_t>(0, targets.size() - 1)(rng_)];
+    // Back along the predecessors to the pose reached from _from.
+    tag_path_.assign(1, target);
+    for (int p = target; previous[p] != _from && tag_path_.size() <= static_cast<size_t>(count);) {
+      p = previous[p];
+      tag_path_.push_back(p);
+    }
+    tag_path_.push_back(_from);
+    std::reverse(tag_path_.begin(), tag_path_.end());
+    return true;
+  }
+  return false;
+}
+
 void PoseWalk::Plan(float _now) {
   Segment& next = next_;
   blend_at_ = segment_.time;
   const PoseFeatures& a = result_->features[segment_.clip];
   const PoseFeatures& b = result_->features[next.clip];
-  auto frame = [](const PoseFeatures& _f, float _time) {
-    return std::clamp(static_cast<int>(std::lround(_time * _f.frame_rate)), 0,
-                      _f.num_frames - 1);
-  };
+  auto frame = &PoseWalk::FeatureFrame;
   if (!best_match) {
     next.difference = PoseFrameDifference(a, frame(a, segment_.time), b,
                                           frame(b, next.start), velocity_weight);

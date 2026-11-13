@@ -62,6 +62,7 @@ OZZ_OPTIONS_DECLARE_BOOL(walk, "Starts the pose walk once common poses are found
 OZZ_OPTIONS_DECLARE_BOOL(best_match, "Best match blend for the pose walk.", false, false)
 OZZ_OPTIONS_DECLARE_BOOL(best_k, "Finds the best cluster count once common poses are found.",
                          false, false)
+OZZ_OPTIONS_DECLARE_STRING(walk_tag, "Tag the pose walk goes to (see Go to tag).", "", false)
 
 namespace {
 
@@ -102,6 +103,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     }
     walk_on_result_ = OPTIONS_walk;
     best_k_on_result_ = OPTIONS_best_k;
+    walk_.target_tag = OPTIONS_walk_tag.value();
     walk_.root_motion = OPTIONS_root_motion;
     walk_.best_match = OPTIONS_best_match;
     if (OPTIONS_clip.value()[0]) {
@@ -111,6 +113,8 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   }
 
   bool OnUpdate(float _dt, float) override {
+    // Global playback speed: preview, pose walk and animated gallery.
+    _dt *= play_speed_;
     if (k_scan_.valid() &&
         k_scan_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
       PickBestK();
@@ -316,6 +320,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     if (character_.DrawGui()) {
       RefreshPose();
     }
+    PlaySpeedGui();
     ImGui::Separator();
 
     // Clip tree first, with a fixed share of the panel, so the sections below
@@ -351,7 +356,11 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     ClustersGui();
     ImGui::EndChild();
     ImGui::End();
-    const int graph_pose = graph_.Draw(result_, pose_, library_);
+    const int graph_pose =
+        graph_.Draw(result_, pose_, library_,
+                    walk_.target_tag.empty() ? std::vector<bool>() : walk_.TaggedPoses(result_),
+                    walk_.active() && !walk_.target_tag.empty() ? walk_.tag_path()
+                                                                : std::vector<int>());
     if (graph_pose >= 0) {
       SelectPose(graph_pose);
     }
@@ -1145,6 +1154,92 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     }
   }
 
+  // Global playback speed: scales everything that plays (preview, pose walk,
+  // animated gallery), on top of the framework's time factor.
+  void PlaySpeedGui() {
+    const float reset = ImGui::CalcTextSize("1x").x + ImGui::GetStyle().FramePadding.x * 2.f +
+                        ImGui::GetStyle().ItemSpacing.x;
+    ImGui::SetNextItemWidth(-reset);
+    ImGui::SliderFloat("##play_speed", &play_speed_, 0.f, 4.f,
+                       play_speed_ == 0.f ? "speed: paused" : "speed %.2fx",
+                       ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip(
+        "Global playback speed: the preview, the pose walk and the animated\n"
+        "gallery (0: paused). Ctrl+click to type a value.");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(play_speed_ == 1.f);
+    if (ImGui::Button("1x")) {
+      play_speed_ = 1.f;
+    }
+    ImGui::EndDisabled();
+  }
+
+  // Go to tag: the tag the walk heads for and stays in (none: random walk),
+  // and how it's doing. Always one line, so the UI below doesn't move.
+  void TagWalkGui() {
+    std::string& target = walk_.target_tag;
+    if (!target.empty() &&
+        std::find(project_.tags.begin(), project_.tags.end(), target) == project_.tags.end()) {
+      target.clear();  // Removed from the project.
+    }
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 9.f);
+    if (ImGui::BeginCombo("##go_to_tag", target.empty() ? "random walk" : target.c_str())) {
+      if (ImGui::Selectable("random walk", target.empty())) {
+        target.clear();
+      }
+      for (const std::string& tag : project_.tags) {
+        if (ImGui::Selectable(tag.c_str(), tag == target)) {
+          target = tag;
+        }
+      }
+      ImGui::EndCombo();
+    }
+    ImGui::SetItemTooltip(
+        "Go to tag: the walk picks a random pose with the tag (enough of its\n"
+        "frames from tagged clips, see min share) and follows the smoothest\n"
+        "path (least total pose difference) to it, through tagged poses if\n"
+        "possible; there, it picks the next one. Random walk when no tagged\n"
+        "pose can be reached. Applies from the next pick.%s",
+        project_.tags.empty() ? "\nAdd tags under Pose set > Tags." : "");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.f);
+    float percent = walk_.tag_threshold * 100.f;
+    if (ImGui::SliderFloat("##tag_threshold", &percent, 1.f, 100.f, "min share %.0f%%",
+                           ImGuiSliderFlags_AlwaysClamp)) {
+      walk_.tag_threshold = percent / 100.f;
+    }
+    ImGui::SetItemTooltip(
+        "Share of a pose's frames from tagged clips for it to count as tagged\n"
+        "(ringed green in the transition graph). If no pose reaches it, the\n"
+        "poses with the highest share count.");
+    // Status, on its own line.
+    if (!walk_.active() || target.empty()) {
+      ImGui::TextDisabled(target.empty() ? "no target tag" : "heads for %s when walking",
+                          target.c_str());
+      return;
+    }
+    std::string path;
+    for (int pose : walk_.tag_path()) {
+      path += (path.empty() ? "" : " -> ") + hyperpose::PoseName(pose);
+    }
+    using Tag = hyperpose::PoseWalk::Segment::Tag;
+    switch (walk_.segment().tag) {
+      case Tag::kSeeking:
+        ImGui::TextColored(kTagColor, "to %s: %s", target.c_str(), path.c_str());
+        break;
+      case Tag::kInTag:
+        ImGui::TextColored(kTagColor, "in %s, to the next: %s", target.c_str(), path.c_str());
+        break;
+      case Tag::kUnreachable:
+        ImGui::TextColored(ImVec4(1.f, .7f, .3f, 1.f), "%s unreachable: random walk",
+                           target.c_str());
+        break;
+      case Tag::kOff:
+        ImGui::TextDisabled("heading for %s from the next pick", target.c_str());
+        break;
+    }
+  }
+
   void WalkGui() {
     if (!ImGui::TreeNodeEx("Pose walk", ImGuiTreeNodeFlags_DefaultOpen)) {
       return;
@@ -1175,6 +1270,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
                               "another clip.", segment.from + 1);
       }
     }
+    TagWalkGui();
     const float width = ImGui::GetContentRegionAvail().x / 2.f - ImGui::GetStyle().ItemSpacing.x;
     ImGui::SetNextItemWidth(width);
     ImGui::SliderFloat("##max_stay", &walk_.max_stay, .1f, 20.f, "max stay %.1fs",
@@ -1374,6 +1470,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   };
   std::vector<Label> labels_;
   bool debug_text_ = true;
+  float play_speed_ = 1.f;  // Global playback speed (see PlaySpeedGui).
   hyperpose::TransitionGraph graph_;  // Transition graph window.
   std::vector<int> transition_example_;  // Per edge: next transition to play.
 };

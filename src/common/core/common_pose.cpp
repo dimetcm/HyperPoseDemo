@@ -130,11 +130,11 @@ std::string PoseTagsText(const CommonPose& _pose) {
 
 void TagCommonPoses(const std::vector<PoseSetEntry>& _entries, CommonPoseResult* _result) {
   // Tags of each result clip, by path.
-  std::vector<const std::vector<std::string>*> clip_tags(_result->clips.size(), nullptr);
+  _result->clip_tags.assign(_result->clips.size(), {});
   for (size_t c = 0; c < _result->clips.size(); ++c) {
     for (const PoseSetEntry& entry : _entries) {
       if (entry.path == _result->clips[c]) {
-        clip_tags[c] = &entry.tags;
+        _result->clip_tags[c] = entry.tags;
         break;
       }
     }
@@ -142,10 +142,8 @@ void TagCommonPoses(const std::vector<PoseSetEntry>& _entries, CommonPoseResult*
   for (CommonPose& pose : _result->poses) {
     std::map<std::string, int> counts;  // Frames per tag.
     for (const CommonPose::Frame& frame : pose.frames) {
-      if (const std::vector<std::string>* tags = clip_tags[frame.clip]) {
-        for (const std::string& tag : *tags) {
-          ++counts[tag];
-        }
+      for (const std::string& tag : _result->clip_tags[frame.clip]) {
+        ++counts[tag];
       }
     }
     pose.tags.clear();

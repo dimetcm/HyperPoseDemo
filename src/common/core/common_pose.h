@@ -137,6 +137,8 @@ struct CommonPoseResult {
   // (see AnimationFrameRate; whole clip, trimming ignored). Clustering uses
   // every _stride-th frame of them, the best match blend all of them.
   std::vector<PoseFeatures> features;
+  // Per clip, its tags (PoseSetEntry::tags), as of TagCommonPoses.
+  std::vector<std::vector<std::string>> clip_tags;
   int num_frames = 0;
   double seconds = 0.;
   std::string error;

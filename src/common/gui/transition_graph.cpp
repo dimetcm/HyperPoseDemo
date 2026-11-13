@@ -14,7 +14,8 @@
 namespace hyperpose {
 
 int TransitionGraph::Draw(const CommonPoseResult& _result, int _selected,
-                          const ClipLibrary& _library) {
+                          const ClipLibrary& _library, const std::vector<bool>& _marked,
+                          const std::vector<int>& _path) {
   if (!open || _result.poses.empty()) {
     return -1;
   }
@@ -165,9 +166,21 @@ int TransitionGraph::Draw(const CommonPoseResult& _result, int _selected,
     }
   }
 
+  // The walk's planned path to the tag, over the other edges.
+  const ImU32 kTag = IM_COL32(120, 210, 120, 255);
+  for (size_t i = 1; i < _path.size(); ++i) {
+    if (_path[i - 1] >= 0 && _path[i - 1] < count && _path[i] >= 0 && _path[i] < count) {
+      edge(_path[i - 1], _path[i], 0.f, kTag, 3.f * dpi, false);
+      connected[_path[i - 1]] = connected[_path[i]] = true;
+    }
+  }
+
   // Nodes over the edges: selected orange, its targets / sources tinted,
-  // nodes without a drawn arrow dimmed.
+  // nodes without a drawn arrow dimmed, _marked poses ringed green.
   for (int p = 0; p < count; ++p) {
+    if (p < static_cast<int>(_marked.size()) && _marked[p]) {
+      draw_list->AddCircle(positions[p], radii[p] + 3.f * dpi, kTag, 0, 2.f * dpi);
+    }
     const bool dim = !connected[p] && p != _selected;
     const ImU32 fill = p == _selected     ? IM_COL32(230, 140, 40, 255)
                        : targets[p] ? IM_COL32(120, 90, 50, 255)
