@@ -1195,10 +1195,10 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       ImGui::EndCombo();
     }
     ImGui::SetItemTooltip(
-        "Go to tag: the walk picks a random pose with the tag (enough of its\n"
-        "frames from tagged clips, see min share) and follows the smoothest\n"
-        "path (least total pose difference) to it, through tagged poses if\n"
-        "possible; there, it picks the next one. Random walk when no tagged\n"
+        "Go to tag: the walk heads for the reachable pose with the highest\n"
+        "share of the tag (among those with at least the min share) along the\n"
+        "smoothest path (least total pose difference), through tagged poses\n"
+        "if possible; there, it picks the next one. Random walk when no tagged\n"
         "pose can be reached. Applies from the next pick.%s",
         project_.tags.empty() ? "\nAdd tags under Pose set > Tags." : "");
     ImGui::SameLine();
@@ -1215,9 +1215,8 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     ImGui::SameLine();
     ImGui::Checkbox("follow clip", &walk_.follow_clip);
     ImGui::SetItemTooltip(
-        "Heads for the reachable tagged pose with the best tag share, and once\n"
-        "a clip steps into the tag, keeps playing that clip to its end (no\n"
-        "blends); at its end, searches again from where it ended.");
+        "Once a tagged clip steps into the tag, keeps playing that clip to its\n"
+        "end (no blends); at its end, searches again from where it ended.");
     // Status, on its own line.
     if (!walk_.active() || target.empty()) {
       ImGui::TextDisabled(target.empty() ? "no target tag" : "heads for %s when walking",

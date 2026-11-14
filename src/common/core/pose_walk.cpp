@@ -113,8 +113,8 @@ bool PoseWalk::Pick(int _from, bool _after_end, Segment* _segment) {
   }
   if (!target_tag.empty()) {
     // The next step of the path to the current target, or the first of a
-    // path to a new random target (reached, or off the path: jumps, a tag
-    // or threshold change).
+    // path to a new target (reached, or off the path: jumps, a tag or
+    // threshold change).
     if (planned_tag_ != target_tag || planned_threshold_ != tag_threshold) {
       tag_path_.clear();
     }
@@ -224,8 +224,9 @@ std::vector<bool> PoseWalk::TaggedPoses(const CommonPoseResult& _result) const {
   return tagged;
 }
 
-void PoseWalk::Paths(int _from, const std::vector<bool>* _through, std::vector<double>* _cost,
-                     std::vector<int>* _previous) const {
+int PoseWalk::Paths(int _from, const std::vector<bool>* _through,
+                    const std::vector<bool>* _stop, std::vector<double>* _cost,
+                    std::vector<int>* _previous) const {
   const int count = static_cast<int>(result_->poses.size());
   std::vector<double>& cost = *_cost;
   std::vector<int>& previous = *_previous;
@@ -256,8 +257,12 @@ void PoseWalk::Paths(int _from, const std::vector<bool>* _through, std::vector<d
       continue;
     }
     done[pose] = true;
+    if (_stop && (*_stop)[pose]) {
+      return pose;  // The cheapest of the _stop poses: no need to go on.
+    }
     relax(pose, at_cost);
   }
+  return -1;
 }
 
 bool PoseWalk::PlanTagPath(int _from) {
@@ -265,14 +270,24 @@ bool PoseWalk::PlanTagPath(int _from) {
   planned_tag_ = target_tag;
   planned_threshold_ = tag_threshold;
   const std::vector<bool> tagged = TaggedPoses(*result_);
+  const std::vector<float> shares = TagShares(*result_);
   const int count = static_cast<int>(tagged.size());
+  // A tagged pose at 100% can't be beaten: the search stops at the first one
+  // it settles, the smoothest to reach.
+  std::vector<bool> full(count, false);
+  for (int p = 0; p < count; ++p) {
+    full[p] = tagged[p] && p != _from && shares[p] >= 1.f - 1e-6f;
+  }
   // Through tagged poses only if possible, else through any.
   for (const std::vector<bool>* through : {&tagged, static_cast<const std::vector<bool>*>(nullptr)}) {
     std::vector<double> cost;
     std::vector<int> previous;
-    Paths(_from, through, &cost, &previous);
+    const int stopped = Paths(_from, through, &full, &cost, &previous);
     std::vector<int> targets;
-    for (int p = 0; p < count; ++p) {
+    if (stopped >= 0) {
+      targets.push_back(stopped);
+    }
+    for (int p = 0; p < count && stopped < 0; ++p) {
       if (tagged[p] && p != _from && cost[p] < std::numeric_limits<double>::infinity()) {
         targets.push_back(p);
       }
@@ -283,15 +298,12 @@ bool PoseWalk::PlanTagPath(int _from) {
     if (targets.empty()) {
       continue;
     }
-    int target = targets[std::uniform_int_distribution<size_t>(0, targets.size() - 1)(rng_)];
-    if (follow_clip) {
-      // The best tag share, then the smoothest path.
-      const std::vector<float> shares = TagShares(*result_);
-      for (int candidate : targets) {
-        if (shares[candidate] > shares[target] + 1e-6f ||
-            (shares[candidate] > shares[target] - 1e-6f && cost[candidate] < cost[target])) {
-          target = candidate;
-        }
+    // The highest tag share, then the smoothest path.
+    int target = targets.front();
+    for (int candidate : targets) {
+      if (shares[candidate] > shares[target] + 1e-6f ||
+          (shares[candidate] > shares[target] - 1e-6f && cost[candidate] < cost[target])) {
+        target = candidate;
       }
     }
     // Back along the predecessors to the pose reached from _from.

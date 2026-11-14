@@ -57,8 +57,9 @@ class PoseWalk {
 
   // Go to tag (empty: the random walk). A pose counts as tagged when enough
   // of its frames come from clips with the tag (CommonPose::tags, see
-  // tag_threshold). The walk picks a random tagged pose as its target and
-  // follows the smoothest path to it (Dijkstra, transitions costing the pose
+  // tag_threshold). The walk picks the reachable tagged pose with the
+  // highest tag share as its target (ties: the smoothest path) and follows
+  // the smoothest path to it (Dijkstra, transitions costing the pose
   // difference, see PoseDifference), through tagged poses if possible;
   // reached, it picks the next target. No tagged pose reachable: the random
   // walk. The clip example of each transition isn't random (see
@@ -72,9 +73,7 @@ class PoseWalk {
   std::vector<bool> TaggedPoses(const CommonPoseResult& _result) const;
   // Per pose of _result, its share of frames from clips with target_tag.
   std::vector<float> TagShares(const CommonPoseResult& _result) const;
-  // Follow clip: the target is the reachable tagged pose with the best tag
-  // share (then the smoothest path), and once a step into the tag is made,
-  // that clip plays on to its end, transition after transition, without
+  // Follow clip: once a tagged clip steps into the tag, that clip plays on to its end, transition after transition, without
   // blends; at its end, a new search from where it ended.
   bool follow_clip = false;
 
@@ -161,11 +160,14 @@ class PoseWalk {
   // Smoothest paths from _from to every pose (Dijkstra, PoseDifference
   // costs, clip ends aside): costs (infinite: unreachable) and predecessors.
   // _through: the poses paths may enter (nullptr: any). _from itself is only
-  // reached back through a loop.
-  void Paths(int _from, const std::vector<bool>* _through, std::vector<double>* _cost,
-             std::vector<int>* _previous) const;
-  // Plans tag_path_ from _from to a random tagged pose, through tagged poses
-  // if possible. False if none can be reached.
+  // reached back through a loop. With _stop, the search stops at the first
+  // _stop pose it settles (the cheapest) and returns it (else -1); costs and
+  // predecessors are then only complete for the poses settled so far.
+  int Paths(int _from, const std::vector<bool>* _through, const std::vector<bool>* _stop,
+            std::vector<double>* _cost, std::vector<int>* _previous) const;
+  // Plans tag_path_ from _from to the reachable tagged pose with the highest
+  // tag share (ties: the smoothest path; _from itself only if it's the only
+  // one), through tagged poses if possible. False if none can be reached.
   bool PlanTagPath(int _from);
 
   const CommonPoseResult* result_ = nullptr;
