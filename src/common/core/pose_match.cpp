@@ -184,8 +184,9 @@ bool ExtractPoseFeatures(const ozz::animation::Animation& _animation,
     to_features(rest.data(), nullptr, nullptr);
   }
   // Pose distance of positions (m, per joint RMS). Converted bind poses land
-  // a few cm off the rest pose, real motion tens of cm.
-  const float kBindPoseTolerance = .05f;
+  // a few cm off the rest pose (3 to 5.1 in the CMU clips: other subjects'
+  // proportions), real motion tens of cm (51 to 59 there).
+  const float kBindPoseTolerance = .15f;
   f.first_frame = 0;
   while (f.first_frame < f.num_frames) {
     const math::Float3* p = &f.positions[f.first_frame * f.num_joints];

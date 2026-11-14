@@ -32,9 +32,14 @@ bool ClipPreview::Advance(float _dt, const PoseSetEntry* _entry) {
   const bool playing = clip.playing;
   const float previous = clip.time;
   clip.Advance(_dt);
-  // Plays the trim range only: wraps (or stops) at its ends.
-  if (playing && play_trim && _entry && _entry->trimmed()) {
-    const float begin = _entry->begin, end = _entry->trim_end();
+  // Plays from the motion start, and the trim range only: wraps (or stops)
+  // at its ends.
+  float begin = motion_start, end = clip.duration();
+  if (play_trim && _entry && _entry->trimmed()) {
+    begin = std::max(begin, _entry->begin);
+    end = _entry->trim_end();
+  }
+  if (playing && begin < end) {
     if (clip.time > end || clip.time < begin) {
       if (clip.loop) {
         clip.time = clip.speed >= 0.f ? begin : end;
@@ -56,7 +61,8 @@ ClipPreview::GuiResult ClipPreview::Gui(PoseSetEntry* _entry, bool _busy) {
                     ImVec2(ImGui::GetFontSize() * 4.f, 0.f))) {
     const float end = trim_range ? _entry->trim_end() : duration;
     if (!clip.playing && !clip.loop && clip.time >= end) {
-      clip.time = trim_range ? _entry->begin : 0.f;  // Replays from the start.
+      // Replays from the start.
+      clip.time = std::max(trim_range ? _entry->begin : 0.f, motion_start);
     }
     clip.playing = !clip.playing;
   }
@@ -72,6 +78,13 @@ ClipPreview::GuiResult ClipPreview::Gui(PoseSetEntry* _entry, bool _busy) {
   ImGui::SetNextItemWidth(-FLT_MIN);
   if (ImGui::SliderFloat("##time", &clip.time, 0.f, duration, "%.2fs")) {
     clip.playing = false;
+  }
+  if (motion_start > 0.f && duration > 0.f) {
+    // The leading bind pose, before the motion starts, shaded.
+    const ImVec2 min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        min, ImVec2(min.x + (max.x - min.x) * motion_start / duration, max.y),
+        IM_COL32(0, 0, 0, 150));
   }
   if (_entry && _entry->trimmed() && duration > 0.f) {
     // Trimmed out parts shaded on the time slider.

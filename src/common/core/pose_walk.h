@@ -55,28 +55,19 @@ class PoseWalk {
   // Moves the character back to the origin, facing the default heading.
   void ResetPosition();
 
-  // Go to tag (empty: the random walk). A pose counts as tagged when enough
-  // of its frames come from clips with the tag (CommonPose::tags, see
-  // tag_threshold). The walk picks the reachable tagged pose with the
-  // highest tag share as its target (ties: the smoothest path) and follows
-  // the smoothest path to it (Dijkstra, transitions costing the pose
-  // difference, see PoseDifference), through tagged poses if possible;
-  // reached, it picks the next target. No tagged pose reachable: the random
-  // walk. The clip example of each transition isn't random (see
-  // BestTransition). Takes effect from the next pick.
+  // Go to tag (empty: the random walk). A pose counts as tagged when any of
+  // its frames come from clips with the tag (CommonPose::tags). The walk
+  // plans a path of transitions to the reachable tagged pose with the
+  // highest tag share, along the shortest path (fewest transitions); among
+  // equally short ones, the fewest clip switches (blends), then tagged clips
+  // (see PlanTagPath). It plays exactly those transitions, the clip carrying
+  // on where the plan follows it; reached, it plans to the next target. No tagged pose reachable: the
+  // random walk. Takes effect from the next pick.
   std::string target_tag;
-  // Share of a pose's frames from clips with target_tag for the pose to count
-  // as tagged (0..1). If no pose reaches it, the poses with the highest share
-  // count.
-  float tag_threshold = .5f;
-  // Per pose of _result, whether it counts as tagged (see tag_threshold).
+  // Per pose of _result, whether it counts as tagged (any share).
   std::vector<bool> TaggedPoses(const CommonPoseResult& _result) const;
   // Per pose of _result, its share of frames from clips with target_tag.
   std::vector<float> TagShares(const CommonPoseResult& _result) const;
-  // Follow clip: once a tagged clip steps into the tag, that clip plays on to its end, transition after transition, without
-  // blends; at its end, a new search from where it ended.
-  bool follow_clip = false;
-
   // Starts walking from _pose (-1: a random one, weighted by frames). _result
   // and _skeleton must outlive the walk (or Stop it before they change).
   bool Start(const CommonPoseResult* _result,
@@ -105,6 +96,13 @@ class PoseWalk {
     int clip = -1;  // Index in CommonPoseResult::clips.
     float start = 0.f;
     float time = 0.f;
+    // A bridge (index in CommonPoseResult::bridges, -1: none): the clip
+    // plays to the bridge (time), then the next segment blends into the
+    // bridge's other clip and plays it on (transition is -1).
+    int bridge = -1;
+    // Go to tag: the step of the plan it plays (-1: none), of plan plan_id.
+    int plan_step = -1;
+    int plan_id = -1;
     // How it was entered: the pose difference of the blend into it (m, -1
     // for the first segment), or continued: the previous segment's clip
     // carried on into it, no blend.
@@ -116,13 +114,12 @@ class PoseWalk {
       kSeeking,      // From an untagged pose, on the path to a tagged one.
       kInTag,        // From a tagged pose, on to the next target.
       kUnreachable,  // No tagged pose reachable: random walk.
-      kFollowing,    // Follow clip: the clip that stepped into the tag plays on.
     };
     Tag tag = Tag::kOff;
   };
   const Segment& segment() const { return segment_; }
-  // With target_tag: the planned path, poses to the current target (its
-  // last pose).
+  // With target_tag: the planned path's poses, from where it was planned to
+  // the current target (its last pose).
   const std::vector<int>& tag_path() const { return tag_path_; }
 
   // Blends since the walk started, to compare blend settings.
@@ -141,34 +138,28 @@ class PoseWalk {
   // Picks the segment out of _from (broad phase); _after_end: right after a
   // clip end, so not to a clip end again.
   bool Pick(int _from, bool _after_end, Segment* _segment);
+  // Fills _segment for transition _index out of _from, or for bridge _bridge
+  // (with _index -1).
+  void FillSegment(int _from, int _index, int _bridge, Segment* _segment) const;
   // Places the blend into next_ (blend_at_, next_.start), from _now in the
   // current segment's clip.
   void Plan(float _now);
   // Starts playing _segment's clip, crossfading over the playing ones.
   bool Begin(const Segment& _segment);
-  // With target_tag: the clip example of _edge to play, not random: among
-  // the transitions from clips with target_tag (all if none), the one whose
-  // start is closest to the current clip where it reaches the next pose
-  // (PoseFrameDifference, velocity_weight); the longest stay at the start.
-  int BestTransition(const PoseEdge& _edge) const;
   // Frame of _features at _time (rounded, clamped).
   static int FeatureFrame(const PoseFeatures& _features, float _time);
-  // Pose difference between common poses _a and _b (m): PoseFrameDifference
-  // of their most typical frames (closest to their centers), with
-  // velocity_weight. The cost of a transition in the path search.
-  float PoseDifference(int _a, int _b) const;
-  // Smoothest paths from _from to every pose (Dijkstra, PoseDifference
-  // costs, clip ends aside): costs (infinite: unreachable) and predecessors.
-  // _through: the poses paths may enter (nullptr: any). _from itself is only
-  // reached back through a loop. With _stop, the search stops at the first
-  // _stop pose it settles (the cheapest) and returns it (else -1); costs and
-  // predecessors are then only complete for the poses settled so far.
-  int Paths(int _from, const std::vector<bool>* _through, const std::vector<bool>* _stop,
-            std::vector<double>* _cost, std::vector<int>* _previous) const;
-  // Plans tag_path_ from _from to the reachable tagged pose with the highest
-  // tag share (ties: the smoothest path; _from itself only if it's the only
-  // one), through tagged poses if possible. False if none can be reached.
-  bool PlanTagPath(int _from);
+  // Plans plan_ (and tag_path_) from _from, the playing transition _start
+  // arriving there (-1: none), to the reachable tagged pose with the highest
+  // tag share. Dijkstra over transitions (a clip arriving in a pose), each
+  // costing 1: the shortest path. From a transition, the same clip's next
+  // one (follow) or, through a small switch cost, any transition out of the
+  // pose from another clip (switch, a blend): among equally short paths, the
+  // fewest switches, then tagged clips. Bridges count as a transition and a
+  // switch; after one, the plan follows its clip. Ties between targets: the
+  // cheapest.
+  // Stops at the first 100% tagged pose reached. False if none can be
+  // reached.
+  bool PlanTagPath(int _from, int _start);
 
   const CommonPoseResult* result_ = nullptr;
   Segment segment_;
@@ -177,11 +168,14 @@ class PoseWalk {
   bool pending_ = false;
   float blend_at_ = 0.f;
   BlendStats stats_;
+  // Go to tag: the plan, in order: transitions (indices in
+  // CommonPoseResult::transitions) and bridges (transitions count + bridge
+  // index); its id (changes with every plan); and its poses.
+  std::vector<int> plan_;
+  int plan_id_ = 0;
   std::vector<int> tag_path_;
-  bool following_ = false;  // Follow clip: playing a clip on.
-  // The tag and threshold tag_path_ was planned for.
+  // The tag the plan was made for.
   std::string planned_tag_;
-  float planned_threshold_ = -1.f;
   // Plays the segments' clips (the last one is the current segment's).
   ClipCrossfade crossfade_;
   std::mt19937 rng_;

@@ -127,6 +127,25 @@ struct CommonPoseSettings {
   bool operator!=(const CommonPoseSettings& _o) const { return !(*this == _o); }
 };
 
+// A bridge between two common poses no clip connects (see
+// ConnectCommonPoses): clip from_clip, playing in pose `from`, blends at
+// from_time into clip to_clip at to_time, in pose `to`, and plays on.
+struct PoseBridge {
+  int from = -1;  // Poses (indices in CommonPoseResult::poses).
+  int to = -1;
+  int from_clip = -1;  // Clips (indices in CommonPoseResult::clips).
+  float from_time = 0.f;
+  // When from_clip entered `from` before from_time (s): where playing it up
+  // to the bridge starts.
+  float from_entered = 0.f;
+  int to_clip = -1;
+  float to_time = 0.f;
+  // to_clip's first transition after to_time (index in
+  // CommonPoseResult::transitions): where it plays on to, -1 if none.
+  int next_transition = -1;
+  float difference = 0.f;  // Pose difference of the blend (m, PoseRms).
+};
+
 struct CommonPoseResult {
   std::vector<std::filesystem::path> clips;
   std::vector<CommonPose> poses;  // Most frames first.
@@ -139,6 +158,8 @@ struct CommonPoseResult {
   std::vector<PoseFeatures> features;
   // Per clip, its tags (PoseSetEntry::tags), as of TagCommonPoses.
   std::vector<std::vector<std::string>> clip_tags;
+  // Bridges added by ConnectCommonPoses (none from FindCommonPoses).
+  std::vector<PoseBridge> bridges;
   int num_frames = 0;
   double seconds = 0.;
   std::string error;
@@ -195,5 +216,14 @@ std::vector<ClusterCountMeasure> MeasureClusterCounts(
 // stops paying off (the point farthest below the line between the curve's
 // ends, both axes normalized). 0 if _measures has fewer than 3 points.
 int ElbowClusterCount(const std::vector<ClusterCountMeasure>& _measures);
+
+// Connects the transition graph of _result with bridges (replacing any):
+// for every pair of poses, the closest pair of their frames (pose
+// difference with _velocity_weight) is a candidate bridge, both ways. The
+// cheapest candidates are added first, each only if its target pose isn't
+// reachable from its source pose yet (through transitions and the bridges
+// so far), until every pose can reach every other: a minimal set of the
+// smoothest blends. Can run on a worker thread.
+void ConnectCommonPoses(float _velocity_weight, CommonPoseResult* _result);
 
 }  // namespace hyperpose

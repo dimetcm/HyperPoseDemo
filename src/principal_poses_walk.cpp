@@ -71,6 +71,8 @@ using hyperpose::PoseSetEntry;
 
 // Clip tags, in the pose set list and the tag set.
 const ImVec4 kTagColor(.55f, .8f, .55f, 1.f);
+// Bridges (see ConnectCommonPoses), as in the transition graph.
+const ImVec4 kBridgeColor(.75f, .55f, 1.f, 1.f);
 
 
 }  // namespace
@@ -389,15 +391,22 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     return it == project_.clips.end() ? nullptr : &*it;
   }
 
-  // Starts clustering the pose set on a worker thread.
+  // Starts finding the common poses of the pose set on a worker thread, then
+  // connecting their transition graph with bridges (see ConnectCommonPoses).
   void StartClustering() {
     if (project_.clips.empty() || Busy()) {
       return;
     }
     status_.clear();
     clustered_project_ = project_;
-    job_ = std::async(std::launch::async, hyperpose::FindCommonPoses, project_.clips, &skeleton(),
-                      project_.settings);
+    job_ = std::async(std::launch::async, [clips = project_.clips, skeleton = &skeleton(),
+                                           settings = project_.settings]() {
+      hyperpose::CommonPoseResult result = hyperpose::FindCommonPoses(clips, skeleton, settings);
+      if (result.error.empty()) {
+        hyperpose::ConnectCommonPoses(settings.velocity_weight, &result);
+      }
+      return result;
+    });
   }
 
   // A worker is running (clustering or the k scan): the set, settings and
@@ -473,7 +482,10 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
 
   // How a walk segment was reached, other than by a transition.
   static const char* SegmentPrefix(const hyperpose::PoseWalk::Segment& _segment) {
-    return _segment.jump ? "jump " : _segment.after_end ? "after end " : "";
+    return _segment.bridge >= 0 ? "bridge "
+           : _segment.jump      ? "jump "
+           : _segment.after_end ? "after end "
+                                : "";
   }
 
   void LogResult() const {
@@ -519,6 +531,15 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       const hyperpose::PoseExits& exits = result_.exits[c];
       ozz::log::Out() << "      ->" << hyperpose::PoseExitsText(exits, 4) << "  (" << exits.count
                       << " transitions)" << std::endl;
+    }
+    for (const hyperpose::PoseBridge& bridge : result_.bridges) {
+      char line[256];
+      std::snprintf(line, sizeof(line), "  bridge #%d ~> #%d: %s @ %.2fs ~> %s @ %.2fs, %.1f cm",
+                    bridge.from + 1, bridge.to + 1,
+                    result_.clips[bridge.from_clip].stem().string().c_str(), bridge.from_time,
+                    result_.clips[bridge.to_clip].stem().string().c_str(), bridge.to_time,
+                    bridge.difference * 100.f);
+      ozz::log::Out() << line << std::endl;
     }
   }
 
@@ -886,6 +907,20 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     }
     ImGui::Text("%d frames from %d clips in %.1fs", result_.num_frames,
                 static_cast<int>(result_.clips.size()), result_.seconds);
+    if (!result_.bridges.empty()) {
+      float largest = 0.f;
+      for (const hyperpose::PoseBridge& bridge : result_.bridges) {
+        largest = std::max(largest, bridge.difference);
+      }
+      ImGui::SameLine();
+      ImGui::TextColored(kBridgeColor, "%d bridges (up to %.1f cm)",
+                         static_cast<int>(result_.bridges.size()), largest * 100.f);
+      ImGui::SetItemTooltip(
+          "Added with the common poses so every pose can reach every other:\n"
+          "blends between the closest frames of two poses no clip connects,\n"
+          "the smoothest first, only where they make a pose reachable. The\n"
+          "walk takes them like transitions (dashed in the graph).");
+    }
 
     // Common poses, most frames first.
     const float rows = std::min<float>(result_.poses.size(), 8.f) + 1.5f;
@@ -1054,6 +1089,38 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
                     result_.clips[transition.clip].stem().string().c_str(), transition.time);
         ImGui::PopID();
       }
+      // Bridges out of the pose (see ConnectCommonPoses).
+      for (size_t b = 0; b < result_.bridges.size(); ++b) {
+        const hyperpose::PoseBridge& bridge = result_.bridges[b];
+        if (bridge.from != pose_) {
+          continue;
+        }
+        ImGui::PushID(static_cast<int>(1000 + b));
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        char label[16];
+        std::snprintf(label, sizeof(label), "~#%d", bridge.to + 1);
+        if (ImGui::Selectable(label)) {
+          select = bridge.to;
+        }
+        ImGui::SetItemTooltip("A bridge (connects the graph): select pose #%d.", bridge.to + 1);
+        ImGui::TableNextColumn();
+        ImGui::TextColored(kBridgeColor, "-");
+        ImGui::TableNextColumn();
+        ImGui::TextColored(kBridgeColor, "bridge");
+        ImGui::TableNextColumn();
+        if (ImGui::SmallButton("Play")) {
+          StartPreview(result_.clips[bridge.from_clip], std::max(0.f, bridge.from_time - 1.f));
+        }
+        ImGui::SetItemTooltip("Plays the bridge's first clip from 1s before it.");
+        ImGui::SameLine();
+        ImGui::TextColored(kBridgeColor, "%s @ %.1fs ~> %s @ %.1fs, %.1f cm",
+                           result_.clips[bridge.from_clip].stem().string().c_str(),
+                           bridge.from_time,
+                           result_.clips[bridge.to_clip].stem().string().c_str(),
+                           bridge.to_time, bridge.difference * 100.f);
+        ImGui::PopID();
+      }
       ImGui::EndTable();
       if (select >= 0) {
         SelectPose(select);
@@ -1110,6 +1177,14 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     if (!SampleClip(_clip, _time)) {  // Loads the clip.
       return;
     }
+    // From where the motion starts: a leading bind pose has the rest pose's
+    // heading, not the clip's, so anchoring root motion on it would turn the
+    // clip by its capture direction.
+    preview_.motion_start = MotionStart(_clip);
+    if (_time < preview_.motion_start) {
+      _time = preview_.motion_start;
+      SampleClip(_clip, _time);
+    }
     preview_.active = true;
     if (walk_.root_motion) {
       // Root motion from the origin.
@@ -1117,6 +1192,28 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       SampleClip(_clip, _time);
     }
     preview_.clip.playing = true;
+  }
+
+  // Where _clip's motion starts (s), after a leading bind pose: from the
+  // common pose features when it's in the result, else extracted (it's the
+  // loaded preview clip).
+  float MotionStart(const fs::path& _clip) const {
+    for (size_t c = 0; c < result_.clips.size() && c < result_.features.size(); ++c) {
+      if (result_.clips[c] == _clip) {
+        const hyperpose::PoseFeatures& features = result_.features[c];
+        return features.first_frame / features.frame_rate;
+      }
+    }
+    if (preview_.clip.path() != _clip) {
+      return 0.f;
+    }
+    hyperpose::PoseFeatures features;
+    if (!hyperpose::ExtractPoseFeatures(preview_.clip.animation(), skeleton(),
+                                        hyperpose::AnimationFrameRate(preview_.clip.animation()),
+                                        &features)) {
+      return 0.f;
+    }
+    return features.first_frame / features.frame_rate;
   }
 
   // Pose walk: the main character walks the transition graph from the
@@ -1196,27 +1293,12 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     }
     ImGui::SetItemTooltip(
         "Go to tag: the walk heads for the reachable pose with the highest\n"
-        "share of the tag (among those with at least the min share) along the\n"
-        "smoothest path (least total pose difference), through tagged poses\n"
-        "if possible; there, it picks the next one. Random walk when no tagged\n"
+        "share of the tag (poses with any share are ringed green in the\n"
+        "transition graph), along the shortest path (fewest transitions;\n"
+        "among equally short ones, fewest clip switches, then tagged clips);\n"
+        "there, it heads for the next one. Random walk when no tagged\n"
         "pose can be reached. Applies from the next pick.%s",
         project_.tags.empty() ? "\nAdd tags under Pose set > Tags." : "");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.f);
-    float percent = walk_.tag_threshold * 100.f;
-    if (ImGui::SliderFloat("##tag_threshold", &percent, 1.f, 100.f, "min share %.0f%%",
-                           ImGuiSliderFlags_AlwaysClamp)) {
-      walk_.tag_threshold = percent / 100.f;
-    }
-    ImGui::SetItemTooltip(
-        "Share of a pose's frames from tagged clips for it to count as tagged\n"
-        "(ringed green in the transition graph). If no pose reaches it, the\n"
-        "poses with the highest share count.");
-    ImGui::SameLine();
-    ImGui::Checkbox("follow clip", &walk_.follow_clip);
-    ImGui::SetItemTooltip(
-        "Once a tagged clip steps into the tag, keeps playing that clip to its\n"
-        "end (no blends); at its end, searches again from where it ended.");
     // Status, on its own line.
     if (!walk_.active() || target.empty()) {
       ImGui::TextDisabled(target.empty() ? "no target tag" : "heads for %s when walking",
@@ -1233,15 +1315,14 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
         ImGui::TextColored(kTagColor, "to %s: %s", target.c_str(), path.c_str());
         break;
       case Tag::kInTag:
-        ImGui::TextColored(kTagColor, "in %s, to the next: %s", target.c_str(), path.c_str());
+        ImGui::TextColored(kTagColor, "in %s, %s %s: %s", target.c_str(),
+                           walk_.segment().continued ? "following" : "on",
+                           result_.clips[walk_.segment().clip].stem().string().c_str(),
+                           path.c_str());
         break;
       case Tag::kUnreachable:
         ImGui::TextColored(ImVec4(1.f, .7f, .3f, 1.f), "%s unreachable: random walk",
                            target.c_str());
-        break;
-      case Tag::kFollowing:
-        ImGui::TextColored(kTagColor, "in %s, following %s", target.c_str(),
-                           result_.clips[walk_.segment().clip].stem().string().c_str());
         break;
       case Tag::kOff:
         ImGui::TextDisabled("heading for %s from the next pick", target.c_str());

@@ -17,6 +17,9 @@ class ClipPreview {
   ClipPlayer clip;         // Also shows still frames while not active.
   bool active = false;     // A clip is being previewed.
   bool play_trim = true;   // Plays only the trim range of a set clip.
+  // Where the clip's motion starts (s), after a leading bind pose (see
+  // PoseFeatures::first_frame): playback starts and loops from there.
+  float motion_start = 0.f;
 
   // Root motion: places the clip so that its root at _time stands at the
   // origin facing the default heading (_character_root nullptr), or where
@@ -26,7 +29,8 @@ class ClipPreview {
   void ApplyAnchor(ozz::span<ozz::math::Float4x4> _models) const;
 
   // Advances playback by _dt, wrapping (looping) or stopping at the ends of
-  // _entry's trim range when play_trim (_entry nullptr: not in the set).
+  // the played range: from motion_start, within _entry's trim range when
+  // play_trim (_entry nullptr: not in the set).
   // Returns true if playback wrapped around (clip loop or trim range).
   bool Advance(float _dt, const PoseSetEntry* _entry);
 

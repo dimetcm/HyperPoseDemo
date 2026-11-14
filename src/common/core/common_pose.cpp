@@ -370,4 +370,171 @@ int ElbowClusterCount(const std::vector<ClusterCountMeasure>& _measures) {
   return elbow;
 }
 
+void ConnectCommonPoses(float _velocity_weight, CommonPoseResult* _result) {
+  CommonPoseResult& r = *_result;
+  r.bridges.clear();
+  const int poses = static_cast<int>(r.poses.size());
+  if (poses < 2) {
+    return;
+  }
+
+  // Every clustered frame, with its pose and features.
+  struct Frame {
+    int pose;
+    int clip;
+    float time;
+    const math::Float3* positions;
+    const math::Float3* velocities;
+  };
+  std::vector<Frame> frames;
+  int joints = 0;
+  for (int p = 0; p < poses; ++p) {
+    for (const CommonPose::Frame& frame : r.poses[p].frames) {
+      const PoseFeatures& features = r.features[frame.clip];
+      const int index =
+          std::clamp(static_cast<int>(std::lround(frame.time * features.frame_rate)), 0,
+                     features.num_frames - 1);
+      const size_t first = static_cast<size_t>(index) * features.num_joints;
+      frames.push_back({p, frame.clip, frame.time, &features.positions[first],
+                        &features.velocities[first]});
+      joints = features.num_joints;
+    }
+  }
+
+  // The closest pair of frames per pair of poses (the distance is
+  // symmetric: one search for both directions).
+  struct Pair {
+    float distance_sqr = std::numeric_limits<float>::max();
+    int a = -1, b = -1;  // Frames, of the lower and the higher pose.
+  };
+  std::vector<Pair> pairs(static_cast<size_t>(poses) * poses);
+  for (size_t i = 0; i < frames.size(); ++i) {
+    for (size_t j = i + 1; j < frames.size(); ++j) {
+      // Not within a pose, nor between nearby frames of a clip (a stutter
+      // back or forth, the clip already joins them).
+      const float kMinGap = .5f;  // s.
+      if (frames[i].pose == frames[j].pose ||
+          (frames[i].clip == frames[j].clip &&
+           std::fabs(frames[i].time - frames[j].time) < kMinGap)) {
+        continue;
+      }
+      const float d = PoseDistanceSqr(frames[i].positions, frames[i].velocities,
+                                      frames[j].positions, frames[j].velocities, joints,
+                                      _velocity_weight);
+      const bool ordered = frames[i].pose < frames[j].pose;
+      Pair& pair = ordered ? pairs[static_cast<size_t>(frames[i].pose) * poses + frames[j].pose]
+                           : pairs[static_cast<size_t>(frames[j].pose) * poses + frames[i].pose];
+      if (d < pair.distance_sqr) {
+        pair.distance_sqr = d;
+        pair.a = ordered ? static_cast<int>(i) : static_cast<int>(j);
+        pair.b = ordered ? static_cast<int>(j) : static_cast<int>(i);
+      }
+    }
+  }
+  struct Candidate {
+    float difference;
+    int from_frame, to_frame;
+  };
+  std::vector<Candidate> candidates;
+  for (int p = 0; p < poses; ++p) {
+    for (int q = p + 1; q < poses; ++q) {
+      const Pair& pair = pairs[static_cast<size_t>(p) * poses + q];
+      if (pair.a >= 0) {
+        const float difference = PoseRms(pair.distance_sqr, joints);
+        candidates.push_back({difference, pair.a, pair.b});
+        candidates.push_back({difference, pair.b, pair.a});
+      }
+    }
+  }
+  std::stable_sort(candidates.begin(), candidates.end(),
+                   [](const Candidate& _a, const Candidate& _b) {
+                     return _a.difference < _b.difference;
+                   });
+
+  // Pose graph: transitions to a pose, then the bridges added.
+  std::vector<std::vector<int>> next(poses);
+  for (int p = 0; p < poses; ++p) {
+    for (const PoseEdge& edge : r.exits[p].edges) {
+      if (edge.to >= 0) {
+        next[p].push_back(edge.to);
+      }
+    }
+  }
+  auto reachable = [&](int _from, int _to, bool _backward) {
+    std::vector<bool> seen(poses, false);
+    std::vector<int> stack = {_from};
+    seen[_from] = true;
+    int count = 1;
+    while (!stack.empty()) {
+      const int p = stack.back();
+      stack.pop_back();
+      if (p == _to) {
+        return poses;  // Found.
+      }
+      auto visit = [&](int _q) {
+        if (!seen[_q]) {
+          seen[_q] = true;
+          ++count;
+          stack.push_back(_q);
+        }
+      };
+      if (_backward) {
+        for (int q = 0; q < poses; ++q) {
+          if (std::find(next[q].begin(), next[q].end(), p) != next[q].end()) {
+            visit(q);
+          }
+        }
+      } else {
+        for (int q : next[p]) {
+          visit(q);
+        }
+      }
+    }
+    return count;  // Poses reached, _to not among them.
+  };
+  auto connected = [&]() {
+    return reachable(0, -1, false) == poses && reachable(0, -1, true) == poses;
+  };
+  // Where a clip entered the pose holding _time, and its next transition.
+  auto entered = [&](int _clip, float _time) {
+    float time = 0.f;
+    for (const PoseTransition& transition : r.transitions) {
+      if (transition.clip == _clip && transition.time <= _time) {
+        time = transition.time;
+      }
+    }
+    return time;
+  };
+  auto next_transition = [&](int _clip, float _time) {
+    for (size_t t = 0; t < r.transitions.size(); ++t) {
+      if (r.transitions[t].clip == _clip && r.transitions[t].time > _time) {
+        return static_cast<int>(t);
+      }
+    }
+    return -1;
+  };
+  for (const Candidate& candidate : candidates) {
+    if (connected()) {
+      break;
+    }
+    const Frame& a = frames[candidate.from_frame];
+    const Frame& b = frames[candidate.to_frame];
+    if (reachable(a.pose, b.pose, false) == poses) {
+      continue;  // Already a way there.
+    }
+    PoseBridge bridge;
+    bridge.from = a.pose;
+    bridge.to = b.pose;
+    bridge.from_clip = a.clip;
+    bridge.from_time = a.time;
+    bridge.from_entered = entered(a.clip, a.time);
+    bridge.to_clip = b.clip;
+    bridge.to_time = b.time;
+    bridge.next_transition = next_transition(b.clip, b.time);
+    bridge.difference = candidate.difference;
+    r.bridges.push_back(bridge);
+    next[a.pose].push_back(b.pose);
+  }
+}
+
 }  // namespace hyperpose

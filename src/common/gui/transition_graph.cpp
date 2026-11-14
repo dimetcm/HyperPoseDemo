@@ -166,6 +166,31 @@ int TransitionGraph::Draw(const CommonPoseResult& _result, int _selected,
     }
   }
 
+  // Bridges (ConnectCommonPoses): dashed straight arrows, purple.
+  const ImU32 kBridge = IM_COL32(190, 140, 255, 220);
+  for (const PoseBridge& bridge : _result.bridges) {
+    if (bridge.from < 0 || bridge.from >= count || bridge.to < 0 || bridge.to >= count) {
+      continue;
+    }
+    const ImVec2 a = positions[bridge.from], b = positions[bridge.to];
+    const float dx = b.x - a.x, dy = b.y - a.y;
+    const float length = std::max(1.f, std::sqrt(dx * dx + dy * dy));
+    const ImVec2 dir(dx / length, dy / length);
+    const float from = radii[bridge.from], to = length - radii[bridge.to] - 2.f * dpi;
+    const float dash = 5.f * dpi, gap = 4.f * dpi, head = 8.f * dpi;
+    for (float d = from; d < to - head; d += dash + gap) {
+      const float e = std::min(d + dash, to - head);
+      draw_list->AddLine(ImVec2(a.x + dir.x * d, a.y + dir.y * d),
+                         ImVec2(a.x + dir.x * e, a.y + dir.y * e), kBridge, 1.5f * dpi);
+    }
+    const ImVec2 tip(a.x + dir.x * to, a.y + dir.y * to);
+    const ImVec2 base(tip.x - dir.x * head, tip.y - dir.y * head);
+    draw_list->AddTriangleFilled(
+        tip, ImVec2(base.x - dir.y * head * .5f, base.y + dir.x * head * .5f),
+        ImVec2(base.x + dir.y * head * .5f, base.y - dir.x * head * .5f), kBridge);
+    connected[bridge.from] = connected[bridge.to] = true;
+  }
+
   // The walk's planned path to the tag, over the other edges.
   const ImU32 kTag = IM_COL32(120, 210, 120, 255);
   for (size_t i = 1; i < _path.size(); ++i) {

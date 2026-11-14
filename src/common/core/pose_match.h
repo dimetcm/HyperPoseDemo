@@ -43,7 +43,7 @@ struct PoseFeatures {
 
 // Samples _animation at _frame_rate and extracts pose features. The root is
 // joint 0 of _skeleton. Leading frames in the skeleton's rest pose (within
-// 5 cm, see PoseDistanceSqr) are detected as a bind pose (see first_frame),
+// 15 cm, see PoseDistanceSqr) are detected as a bind pose (see first_frame),
 // unless every frame is.
 bool ExtractPoseFeatures(const ozz::animation::Animation& _animation,
                          const ozz::animation::Skeleton& _skeleton,
