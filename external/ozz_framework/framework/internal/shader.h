@@ -213,6 +213,23 @@ class AmbientShader : public Shader {
                      int _fragment_count, const char** _fragment);
 };
 
+// Ambient shader skinning vertices on the GPU (see Renderer::CreateGpuMesh):
+// up to 8 joint influences per vertex, kMaxJoints joint matrices.
+class SkinnedAmbientShader : public Shader {
+ public:
+  enum { kMaxJoints = 64 };
+
+  SkinnedAmbientShader() {}
+  virtual ~SkinnedAmbientShader() {}
+
+  static ozz::unique_ptr<SkinnedAmbientShader> Build();
+
+  // Binds the shader for the array buffer bound, interleaved: position (3
+  // floats), normal (3 floats), joint indices (8 bytes), weights (8 floats).
+  void Bind(const math::Float4x4& _model, const math::Float4x4& _view_proj,
+            span<const math::Float4x4> _joints);
+};
+
 class AmbientShaderInstanced : public Shader {
  public:
   AmbientShaderInstanced() {}

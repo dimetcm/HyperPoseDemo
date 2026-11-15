@@ -28,6 +28,7 @@
 #ifndef OZZ_SAMPLES_FRAMEWORK_RENDERER_H_
 #define OZZ_SAMPLES_FRAMEWORK_RENDERER_H_
 
+#include "ozz/base/memory/unique_ptr.h"
 #include "ozz/base/platform.h"
 #include "ozz/base/span.h"
 
@@ -171,6 +172,26 @@ class Renderer {
                                const span<math::Float4x4> _skinning_matrices,
                                const ozz::math::Float4x4& _transform,
                                const Options& _options = Options()) = 0;
+
+  // GPU skinning (HyperPoseDemo addition): a mesh uploaded to the GPU once
+  // (positions, normals, joint indices and weights), skinned there by a
+  // vertex shader, so a draw only sends its joint matrices. Drawn as
+  // DrawSkinnedMesh with default options (white, ambient lit).
+  class GpuMesh {
+   public:
+    virtual ~GpuMesh() {}
+  };
+
+  // Uploads _mesh for DrawGpuMesh. nullptr if it can't be skinned on the
+  // GPU (not skinned, more than 8 influences per vertex or 64 joints). The
+  // mesh may outlive the renderer: its GPU data is then already released.
+  virtual ozz::unique_ptr<GpuMesh> CreateGpuMesh(const Mesh& _mesh) = 0;
+
+  // Draws _mesh (from CreateGpuMesh) skinned by _skinning_matrices, one per
+  // mesh joint as for DrawSkinnedMesh, at _transform.
+  virtual bool DrawGpuMesh(const GpuMesh& _mesh,
+                           span<const math::Float4x4> _skinning_matrices,
+                           const ozz::math::Float4x4& _transform) = 0;
 
   // Renders a mesh at a specified location.
   virtual bool DrawMesh(const Mesh& _mesh,

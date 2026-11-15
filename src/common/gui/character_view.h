@@ -10,6 +10,7 @@
 
 #include "common/core/retarget.h"
 #include "framework/mesh.h"
+#include "framework/renderer.h"
 #include "ozz/animation/runtime/skeleton.h"
 #include "ozz/base/containers/vector.h"
 #include "ozz/base/maths/box.h"
@@ -48,18 +49,20 @@ class CharacterView {
   ozz::math::Box Bounds(ozz::span<const ozz::math::Float4x4> _clip_models,
                         const ozz::math::Float4x4& _transform) const;
 
-  // Draws the skinned meshes in a clip pose.
+  // Draws the skinned meshes in a clip pose. Meshes are skinned on the GPU
+  // (uploaded once per character, see Renderer::CreateGpuMesh), on the CPU
+  // when they can't be.
   bool Draw(ozz::sample::Renderer* _renderer,
             ozz::span<const ozz::math::Float4x4> _clip_models,
             const ozz::math::Float4x4& _transform);
 
-  // Skins the meshes in a clip pose once, into static meshes (no skinning
-  // data) that DrawBaked renders without per frame skinning.
-  bool Bake(ozz::span<const ozz::math::Float4x4> _clip_models,
-            ozz::vector<ozz::sample::Mesh>* _baked);
-  static bool DrawBaked(ozz::sample::Renderer* _renderer,
-                        const ozz::vector<ozz::sample::Mesh>& _baked,
-                        const ozz::math::Float4x4& _transform);
+  // A clip pose's skinning matrices, per mesh: computed once by Bake (the
+  // posing and retargeting), for a pose drawn many times by DrawBaked.
+  // Valid for the character it was baked with (see generation()).
+  using Baked = std::vector<ozz::vector<ozz::math::Float4x4>>;
+  bool Bake(ozz::span<const ozz::math::Float4x4> _clip_models, Baked* _baked);
+  bool DrawBaked(ozz::sample::Renderer* _renderer, const Baked& _baked,
+                 const ozz::math::Float4x4& _transform);
 
   // Character selection combo and status. Returns true on selection change.
   bool DrawGui();
@@ -81,6 +84,12 @@ class CharacterView {
   void ScanFolder(const std::filesystem::path& _path);
   bool SameSkeleton() const { return clip_skeleton_path_ == skeleton_path_; }
   void SetupRetarget();
+  // Creates the GPU meshes of the character, if not done yet.
+  void UpdateGpuMeshes(ozz::sample::Renderer* _renderer);
+  // Draws mesh _mesh, on the GPU if it has a GPU mesh.
+  bool DrawMesh(ozz::sample::Renderer* _renderer, size_t _mesh,
+                ozz::span<ozz::math::Float4x4> _skinning_matrices,
+                const ozz::math::Float4x4& _transform);
 
   std::vector<Character> characters_;
   int index_ = -1;
@@ -90,6 +99,10 @@ class CharacterView {
   std::filesystem::path skeleton_path_;
   ozz::animation::Skeleton skeleton_;
   ozz::vector<ozz::sample::Mesh> meshes_;
+  // GPU meshes of meshes_ (nullptr: drawn on the CPU), of generation
+  // gpu_generation_.
+  std::vector<ozz::unique_ptr<ozz::sample::Renderer::GpuMesh>> gpu_meshes_;
+  int gpu_generation_ = -1;
   // Scratch: character pose and skinning matrices of the pose being drawn.
   ozz::vector<ozz::math::Float4x4> models_;
   ozz::vector<ozz::math::Float4x4> skinning_matrices_;

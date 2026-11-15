@@ -688,6 +688,88 @@ void AmbientShader::Bind(const math::Float4x4& _model,
   glUniformMat4(_view_proj, uniform(1));
 }
 
+ozz::unique_ptr<SkinnedAmbientShader> SkinnedAmbientShader::Build() {
+  const char* vs[] = {
+      kPlatformSpecificVSHeader,
+      "uniform mat4 u_model;\n"
+      "uniform mat4 u_viewproj;\n"
+      "uniform mat4 u_joints[64];\n"
+      "in vec3 a_position;\n"
+      "in vec3 a_normal;\n"
+      "in vec4 a_joints0;\n"
+      "in vec4 a_joints1;\n"
+      "in vec4 a_weights0;\n"
+      "in vec4 a_weights1;\n"
+      "out vec3 v_world_normal;\n"
+      "out vec4 v_vertex_color;\n"
+      "void main() {\n"
+      "  mat4 skin =\n"
+      "    u_joints[int(a_joints0.x)] * a_weights0.x +\n"
+      "    u_joints[int(a_joints0.y)] * a_weights0.y +\n"
+      "    u_joints[int(a_joints0.z)] * a_weights0.z +\n"
+      "    u_joints[int(a_joints0.w)] * a_weights0.w +\n"
+      "    u_joints[int(a_joints1.x)] * a_weights1.x +\n"
+      "    u_joints[int(a_joints1.y)] * a_weights1.y +\n"
+      "    u_joints[int(a_joints1.z)] * a_weights1.z +\n"
+      "    u_joints[int(a_joints1.w)] * a_weights1.w;\n"
+      "  mat4 world_matrix = u_model * skin;\n"
+      "  gl_Position = u_viewproj * world_matrix * vec4(a_position, 1.);\n"
+      "  mat3 cross_matrix = mat3(\n"
+      "    cross(world_matrix[1].xyz, world_matrix[2].xyz),\n"
+      "    cross(world_matrix[2].xyz, world_matrix[0].xyz),\n"
+      "    cross(world_matrix[0].xyz, world_matrix[1].xyz));\n"
+      "  float invdet = 1.0 / dot(cross_matrix[2], world_matrix[2].xyz);\n"
+      "  v_world_normal = cross_matrix * invdet * a_normal;\n"
+      "  v_vertex_color = vec4(1.);\n"
+      "}\n"};
+  const char* fs[] = {kPlatformSpecificFSHeader, kShaderAmbientFct,
+                      kShaderAmbientFS};
+
+  ozz::unique_ptr<SkinnedAmbientShader> shader =
+      make_unique<SkinnedAmbientShader>();
+  bool success =
+      shader->BuildFromSource(OZZ_ARRAY_SIZE(vs), vs, OZZ_ARRAY_SIZE(fs), fs);
+  success &= shader->FindAttrib("a_position");
+  success &= shader->FindAttrib("a_normal");
+  success &= shader->FindAttrib("a_joints0");
+  success &= shader->FindAttrib("a_joints1");
+  success &= shader->FindAttrib("a_weights0");
+  success &= shader->FindAttrib("a_weights1");
+  success &= shader->BindUniform("u_model");
+  success &= shader->BindUniform("u_viewproj");
+  success &= shader->BindUniform("u_joints");
+  if (!success) {
+    shader.reset();
+  }
+  return shader;
+}
+
+void SkinnedAmbientShader::Bind(const math::Float4x4& _model,
+                                const math::Float4x4& _view_proj,
+                                span<const math::Float4x4> _joints) {
+  GL(UseProgram(program()));
+  const GLsizei stride = 64;
+  const struct {
+    int attrib;
+    GLint size;
+    GLenum type;
+    GLsizei offset;
+  } attribs[] = {{0, 3, GL_FLOAT, 0},          {1, 3, GL_FLOAT, 12},
+                 {2, 4, GL_UNSIGNED_BYTE, 24}, {3, 4, GL_UNSIGNED_BYTE, 28},
+                 {4, 4, GL_FLOAT, 32},         {5, 4, GL_FLOAT, 48}};
+  for (const auto& a : attribs) {
+    GL(EnableVertexAttribArray(attrib(a.attrib)));
+    GL(VertexAttribPointer(attrib(a.attrib), a.size, a.type, GL_FALSE, stride,
+                           GL_PTR_OFFSET(a.offset)));
+  }
+  glUniformMat4(_model, uniform(0));
+  glUniformMat4(_view_proj, uniform(1));
+  static_assert(sizeof(math::Float4x4) == 16 * sizeof(float),
+                "Float4x4 must be 16 contiguous floats");
+  GL(UniformMatrix4fv(uniform(2), static_cast<GLsizei>(_joints.size()), false,
+                      reinterpret_cast<const float*>(_joints.data())));
+}
+
 ozz::unique_ptr<AmbientShaderInstanced> AmbientShaderInstanced::Build() {
   bool success = true;
 

@@ -147,7 +147,7 @@ bool PoseGallery::Draw(ozz::sample::Renderer* _renderer,
       if (animate) {
         success &= _character->Draw(_renderer, pose.models, transform);
       } else {
-        success &= CharacterView::DrawBaked(_renderer, baked_[c], transform);
+        success &= _character->DrawBaked(_renderer, baked_[c], transform);
       }
     }
     if (_draw_skeleton || !show_character) {

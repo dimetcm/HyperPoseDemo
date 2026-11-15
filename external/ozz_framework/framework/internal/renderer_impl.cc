@@ -29,6 +29,9 @@
 
 #include "renderer_impl.h"
 
+#include <algorithm>
+#include <cstring>
+
 #include "camera.h"
 #include "framework/mesh.h"
 #include "icosphere.h"
@@ -70,6 +73,11 @@ RendererImpl::Model::~Model() {
 RendererImpl::RendererImpl(Camera* _camera) : camera_(_camera) {}
 
 RendererImpl::~RendererImpl() {
+  // GPU meshes still alive: their data goes now, while the context exists.
+  while (!gpu_meshes_.empty()) {
+    ReleaseGpuMesh(gpu_meshes_.back());
+  }
+
 #ifndef __EMSCRIPTEN__
   if (vertex_array_o_) {
     GL(DeleteVertexArrays(1, &vertex_array_o_));
@@ -120,6 +128,9 @@ bool RendererImpl::Initialize() {
   if (!immediate_->Initialize()) {
     return false;
   }
+
+  // GPU skinning shader (optional: meshes are skinned on the CPU without).
+  skinned_ambient_shader = SkinnedAmbientShader::Build();
 
   // Instantiate ambient rendering shader.
   ambient_shader = AmbientShader::Build();
@@ -1443,6 +1454,108 @@ bool RendererImpl::DrawMesh(const Mesh& _mesh,
     }
   }
 
+  return true;
+}
+
+RendererImpl::GpuMeshImpl::~GpuMeshImpl() {
+  if (renderer) {
+    renderer->ReleaseGpuMesh(this);
+  }
+}
+
+void RendererImpl::ReleaseGpuMesh(GpuMeshImpl* _mesh) {
+  if (_mesh->vbo) {
+    GL(DeleteBuffers(1, &_mesh->vbo));
+  }
+  if (_mesh->ibo) {
+    GL(DeleteBuffers(1, &_mesh->ibo));
+  }
+  _mesh->vbo = _mesh->ibo = 0;
+  _mesh->renderer = nullptr;
+  gpu_meshes_.erase(std::remove(gpu_meshes_.begin(), gpu_meshes_.end(), _mesh),
+                    gpu_meshes_.end());
+}
+
+ozz::unique_ptr<Renderer::GpuMesh> RendererImpl::CreateGpuMesh(
+    const Mesh& _mesh) {
+  if (!skinned_ambient_shader || !_mesh.skinned() ||
+      _mesh.num_joints() > SkinnedAmbientShader::kMaxJoints ||
+      _mesh.max_influences_count() > 8) {
+    return nullptr;
+  }
+  // Interleaved vertices, see SkinnedAmbientShader::Bind.
+  struct Vertex {
+    float position[3];
+    float normal[3];
+    uint8_t joints[8];
+    float weights[8];
+  };
+  static_assert(sizeof(Vertex) == 64, "Vertex layout");
+  ozz::vector<Vertex> vertices(_mesh.vertex_count());
+  size_t v = 0;
+  for (const Mesh::Part& part : _mesh.parts) {
+    const int count = part.vertex_count();
+    const int influences = part.influences_count();
+    const bool normals = part.normals.size() == static_cast<size_t>(count) * 3;
+    for (int i = 0; i < count; ++i, ++v) {
+      Vertex& out = vertices[v];
+      std::memset(&out, 0, sizeof(out));
+      for (int c = 0; c < 3; ++c) {
+        out.position[c] = part.positions[i * 3 + c];
+        out.normal[c] = normals ? part.normals[i * 3 + c] : (c == 1 ? 1.f : 0.f);
+      }
+      // influences - 1 weights stored, the last one completes to 1.
+      float sum = 0.f;
+      for (int k = 0; k < influences; ++k) {
+        out.joints[k] = static_cast<uint8_t>(part.joint_indices[i * influences + k]);
+        if (k < influences - 1) {
+          out.weights[k] = part.joint_weights[i * (influences - 1) + k];
+          sum += out.weights[k];
+        } else {
+          out.weights[k] = 1.f - sum;
+        }
+      }
+    }
+  }
+  ozz::unique_ptr<GpuMeshImpl> mesh = make_unique<GpuMeshImpl>();
+  mesh->renderer = this;
+  mesh->num_joints = _mesh.num_joints();
+  mesh->index_count = static_cast<GLsizei>(_mesh.triangle_indices.size());
+  GL(GenBuffers(1, &mesh->vbo));
+  GL(BindBuffer(GL_ARRAY_BUFFER, mesh->vbo));
+  GL(BufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex),
+                vertices.data(), GL_STATIC_DRAW));
+  GL(BindBuffer(GL_ARRAY_BUFFER, 0));
+  GL(GenBuffers(1, &mesh->ibo));
+  GL(BindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh->ibo));
+  GL(BufferData(GL_ELEMENT_ARRAY_BUFFER,
+                _mesh.triangle_indices.size() *
+                    sizeof(Mesh::TriangleIndices::value_type),
+                array_begin(_mesh.triangle_indices), GL_STATIC_DRAW));
+  GL(BindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
+  gpu_meshes_.push_back(mesh.get());
+  return mesh;
+}
+
+bool RendererImpl::DrawGpuMesh(const GpuMesh& _mesh,
+                               span<const math::Float4x4> _skinning_matrices,
+                               const ozz::math::Float4x4& _transform) {
+  const GpuMeshImpl& mesh = static_cast<const GpuMeshImpl&>(_mesh);
+  if (!mesh.vbo || !skinned_ambient_shader ||
+      static_cast<int>(_skinning_matrices.size()) < mesh.num_joints) {
+    return false;
+  }
+  GL(BindBuffer(GL_ARRAY_BUFFER, mesh.vbo));
+  skinned_ambient_shader->Bind(
+      _transform, camera()->view_proj(),
+      _skinning_matrices.subspan(0, static_cast<size_t>(mesh.num_joints)));
+  GL(BindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.ibo));
+  static_assert(sizeof(Mesh::TriangleIndices::value_type) == 2,
+                "Expects 2 bytes indices.");
+  GL(DrawElements(GL_TRIANGLES, mesh.index_count, GL_UNSIGNED_SHORT, 0));
+  GL(BindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
+  GL(BindBuffer(GL_ARRAY_BUFFER, 0));
+  skinned_ambient_shader->Unbind();
   return true;
 }
 

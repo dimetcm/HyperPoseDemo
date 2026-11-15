@@ -13,6 +13,7 @@
 
 #include "common/core/clip_player.h"
 #include "common/core/common_pose.h"
+#include "common/gui/character_view.h"
 #include "framework/mesh.h"
 #include "ozz/base/containers/vector.h"
 #include "ozz/base/maths/box.h"
@@ -98,7 +99,7 @@ class PoseGallery {
   // Most typical frame of each pose, aligned to the origin, and the character
   // skinned in it.
   std::vector<ozz::vector<ozz::math::Float4x4>> still_;
-  std::vector<ozz::vector<ozz::sample::Mesh>> baked_;
+  std::vector<CharacterView::Baked> baked_;  // Per still pose.
   int baked_generation_ = -1;  // Character generation of baked_.
 
   std::vector<std::unique_ptr<Slot>> slots_;
