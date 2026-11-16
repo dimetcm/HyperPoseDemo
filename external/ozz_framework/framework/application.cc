@@ -782,6 +782,8 @@ bool Application::GetCameraOverride(math::Float4x4*) const { return false; }
 
 math::Box Application::GetSceneBounds() const { return {}; }
 
+math::Float4x4 Application::CameraView() const { return camera_->view(); }
+
 math::Float2 Application::WorldToScreen(const math::Float3& _world) const {
   const math::SimdFloat4 ndc =
       (camera_->projection() * camera_->view()) *

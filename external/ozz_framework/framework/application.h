@@ -86,6 +86,10 @@ class Application {
   // Allows application to convert from world space to screen coordinates.
   math::Float2 WorldToScreen(const math::Float3& _world) const;
 
+  // Camera view matrix (world to view), e.g. for camera relative controls
+  // (HyperPoseDemo addition).
+  math::Float4x4 CameraView() const;
+
  private:
   // Provides initialization event to the inheriting application. Called while
   // the help screen is being displayed.

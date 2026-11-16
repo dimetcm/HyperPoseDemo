@@ -40,6 +40,7 @@ class PoseGallery {
   bool animate = false;
   float spacing = 1.f;    // Between characters (m).
   float play_time = 1.f;  // Animated: play time of each picked frame (s).
+  float speed = .2f;      // Animated: clips' playback speed (time scale).
 
   // Rebuilds the gallery for the common poses of _result, which must have
   // been found for _skeleton (that must outlive the gallery). Returns false,

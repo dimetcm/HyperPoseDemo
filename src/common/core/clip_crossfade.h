@@ -50,6 +50,10 @@ class ClipCrossfade {
 
   // Moves the character back to the origin, facing the default heading.
   void ResetPosition();
+  // Where the character root stands (on the ground) and its heading, as of
+  // the last Sample.
+  const ozz::math::Float3& root_position() const { return root_position_; }
+  float root_heading() const { return root_heading_; }
 
   // Advances every clip by _dt.
   void Advance(float _dt);

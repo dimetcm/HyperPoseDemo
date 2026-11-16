@@ -12,6 +12,36 @@
 namespace math = ozz::math;
 
 namespace hyperpose {
+namespace {
+
+const float kPi = 3.14159265f;
+
+float WrapAngle(float _angle) {
+  return _angle - 2.f * kPi * std::floor((_angle + kPi) / (2.f * kPi));
+}
+
+// Clip root on the ground and its heading at _time, between frames.
+void RootAt(const PoseFeatures& _features, float _time, math::Float3* _position,
+            float* _heading) {
+  const float x = std::clamp(_time * _features.frame_rate, 0.f,
+                             static_cast<float>(_features.num_frames - 1));
+  const int i = static_cast<int>(x);
+  const int j = std::min(i + 1, _features.num_frames - 1);
+  const float a = x - static_cast<float>(i);
+  const math::Float3& pi = _features.root_positions[i];
+  const math::Float3& pj = _features.root_positions[j];
+  *_position = pi + (pj - pi) * a;
+  _position->y = 0.f;
+  *_heading = _features.root_headings[i] +
+              WrapAngle(_features.root_headings[j] - _features.root_headings[i]) * a;
+}
+
+float ClipEnd(const PoseFeatures& _features) {
+  return _features.num_frames > 1 ? (_features.num_frames - 1) / _features.frame_rate : 0.f;
+}
+
+}  // namespace
+
 PoseWalk::PoseWalk() : rng_(std::random_device{}()) {}
 PoseWalk::~PoseWalk() = default;
 
@@ -27,6 +57,8 @@ bool PoseWalk::Start(const CommonPoseResult* _result,
   crossfade_.blend = blend;
   crossfade_.Reset(_skeleton, _heading_axis);
   stats_ = BlendStats();
+  match_ = Match();
+  MeasureFacingOffset();
   if (_pose < 0) {
     std::vector<double> weights;
     for (const CommonPose& pose : result_->poses) {
@@ -107,10 +139,14 @@ bool PoseWalk::Pick(int _from, bool _after_end, Segment* _segment) {
     segment.jump = true;
   }
 
-  // Go to tag: the next step of the plan, or the first of a new plan
+  // Character control: the first step of the path best following the goal.
+  // Else go to tag: the next step of the plan, or the first of a new plan
   // (target reached, or off the plan: jumps, clip ends, a tag change).
   int planned = -1;  // A plan entry (see plan_).
-  if (!target_tag.empty()) {
+  const bool matching = use_goal && !goal.empty();
+  if (matching) {
+    planned = SearchTrajectory(_from, _after_end, segment.jump);
+  } else if (!target_tag.empty()) {
     if (planned_tag_ != target_tag) {
       plan_.clear();
       ++plan_id_;
@@ -171,7 +207,8 @@ bool PoseWalk::Pick(int _from, bool _after_end, Segment* _segment) {
   segment.plan_id = plan_id;
   segment.after_end = after_end;
   segment.jump = jump;
-  segment.tag = target_tag.empty() ? Segment::Tag::kOff
+  segment.matched = matching && planned >= 0;
+  segment.tag = matching || target_tag.empty() ? Segment::Tag::kOff
                 : planned < 0      ? Segment::Tag::kUnreachable
                                    : tag_state(_from);
   // The playing clip carrying on plays on from where it is.
@@ -375,6 +412,255 @@ bool PoseWalk::PlanTagPath(int _from, int _start) {
     tag_path_.push_back(entry < count ? transitions[entry].to : bridges[entry - count].to);
   }
   return !plan_.empty();
+}
+
+void PoseWalk::MeasureFacingOffset() {
+  // Circular mean, weighted by speed, of the direction each clip's root
+  // moves in (over ~0.2 s) less its heading, while it moves.
+  double sin_sum = 0., cos_sum = 0.;
+  for (const PoseFeatures& features : result_->features) {
+    const int window = std::max(1, static_cast<int>(std::lround(.2f * features.frame_rate)));
+    for (int i = features.first_frame; i + window < features.num_frames; ++i) {
+      math::Float3 move = features.root_positions[i + window] - features.root_positions[i];
+      move.y = 0.f;
+      const float speed = Length(move) * features.frame_rate / window;
+      if (speed < .5f) {
+        continue;
+      }
+      const float heading = features.root_headings[i] +
+                            WrapAngle(features.root_headings[i + window] -
+                                      features.root_headings[i]) * .5f;
+      const float angle = std::atan2(move.x, move.z) - heading;
+      sin_sum += speed * std::sin(angle);
+      cos_sum += speed * std::cos(angle);
+    }
+  }
+  facing_offset_ = sin_sum == 0. && cos_sum == 0.
+                       ? 0.f
+                       : static_cast<float>(std::atan2(sin_sum, cos_sum));
+}
+
+int PoseWalk::SearchTrajectory(int _from, bool _after_end, bool _jump) {
+  match_ = Match();
+  const std::vector<PoseTransition>& transitions = result_->transitions;
+  const std::vector<PoseBridge>& bridges = result_->bridges;
+  const std::vector<PoseFeatures>& features = result_->features;
+  const int count = static_cast<int>(transitions.size());
+  const int n = static_cast<int>(
+      std::min({goal.times.size(), goal.positions.size(), goal.facings.size()}));
+  if (n == 0) {
+    return -1;
+  }
+
+  // A path: its steps (plan_ entries) and where they lead, the root (world)
+  // at its end, and its cost so far: blends, and the goal points it covers.
+  struct Path {
+    std::vector<int> steps;
+    std::vector<int> poses;
+    int pose = -1;
+    int clip = -1;        // The clip playing at its end (-1: none).
+    float clip_end = 0.f;  // And its time there.
+    math::Float3 position = math::Float3::zero();
+    float heading = 0.f;  // Root heading.
+    math::Float3 velocity = math::Float3::zero();  // At its end (world).
+    float elapsed = 0.f;
+    float cost = 0.f;
+    std::vector<math::Float3> positions;  // At the covered goal points.
+    std::vector<float> facings;
+    bool after_end = false;  // Ends at a clip end: goes on from the pose.
+    // cost, plus the goal points left, extrapolated at the end velocity.
+    float estimate = 0.f;
+    int covered() const { return static_cast<int>(positions.size()); }
+  };
+  // Velocities count when the goal has them.
+  const bool velocities = static_cast<int>(goal.velocities.size()) >= n;
+  auto error = [&](int _k, const math::Float3& _position, float _facing,
+                   const math::Float3& _velocity) {
+    math::Float3 d = _position - goal.positions[_k];
+    d.y = 0.f;
+    const float f = WrapAngle(_facing - goal.facings[_k]) * facing_weight;
+    float e = d.x * d.x + d.z * d.z + f * f;
+    if (velocities) {
+      math::Float3 v = (_velocity - goal.velocities[_k]) * goal_velocity_weight;
+      e += v.x * v.x + v.z * v.z;
+    }
+    return e;
+  };
+  // Plays _clip from _t0 to _t1 on the path, from where the path ends.
+  auto play = [&](Path* _path, int _clip, float _t0, float _t1) {
+    const PoseFeatures& f = features[_clip];
+    _t1 = std::min(_t1, ClipEnd(f));
+    _t0 = std::min(_t0, _t1);
+    math::Float3 r0, r;
+    float h0, h;
+    RootAt(f, _t0, &r0, &h0);
+    const float yaw = _path->heading - h0;
+    auto place = [&](float _t, math::Float3* _position, float* _heading) {
+      RootAt(f, _t, &r, &h);
+      *_position = _path->position + RotateY(r - r0, yaw);
+      *_heading = _path->heading + (h - h0);
+    };
+    // Root velocity at clip time _t, at _position, over the 0.1 s of the
+    // clip before (placed as the path plays it).
+    auto velocity_at = [&](float _t, const math::Float3& _position) {
+      const float back = std::min(.1f, _t);
+      if (back <= 1e-3f) {
+        return _path->velocity;
+      }
+      math::Float3 before;
+      float unused;
+      place(_t - back, &before, &unused);
+      math::Float3 velocity = (_position - before) * (1.f / back);
+      velocity.y = 0.f;
+      return velocity;
+    };
+    while (_path->covered() < n && goal.times[_path->covered()] <= _path->elapsed + (_t1 - _t0)) {
+      const int k = _path->covered();
+      const float t = _t0 + goal.times[k] - _path->elapsed;
+      math::Float3 position;
+      float heading;
+      place(t, &position, &heading);
+      const float facing = heading + facing_offset_;
+      _path->cost += error(k, position, facing, velocity_at(t, position));
+      _path->positions.push_back(position);
+      _path->facings.push_back(facing);
+    }
+    math::Float3 position;
+    float heading;
+    place(_t1, &position, &heading);
+    _path->velocity = velocity_at(_t1, position);
+    _path->position = position;
+    _path->heading = heading;
+    _path->elapsed += _t1 - _t0;
+    _path->clip = _clip;
+    _path->clip_end = _t1;
+  };
+  auto blend = [&](Path* _path, int _clip, float _time) {
+    if (_path->clip >= 0) {
+      const PoseFeatures& a = features[_path->clip];
+      const PoseFeatures& b = features[_clip];
+      _path->cost += blend_weight * PoseFrameDifference(a, FeatureFrame(a, _path->clip_end), b,
+                                                        FeatureFrame(b, _time), velocity_weight);
+    }
+  };
+  auto finish = [&](Path* _path) {
+    _path->estimate = _path->cost;
+    for (int k = _path->covered(); k < n; ++k) {
+      _path->estimate +=
+          error(k, _path->position + _path->velocity * (goal.times[k] - _path->elapsed),
+                _path->heading + facing_offset_, _path->velocity);
+    }
+  };
+  // Carries on in the clip the path plays, when it's at or before _time and
+  // since _entered.
+  auto carries_on = [&](const Path& _path, int _clip, float _entered, float _time) {
+    return _path.clip == _clip && _path.clip_end >= _entered - 1e-4f &&
+           _path.clip_end <= _time + 1e-4f;
+  };
+
+  // The start: the playing segment carries on until it reaches _from.
+  Path root;
+  root.pose = _from;
+  root.position = crossfade_.root_position();
+  root.heading = crossfade_.root_heading();
+  if (!crossfade_.empty() && segment_.clip >= 0) {
+    const float now = crossfade_.current().time;
+    root.clip = segment_.clip;
+    root.clip_end = now;
+    if (!_after_end && !_jump) {
+      play(&root, segment_.clip, now, std::max(now, segment_.time));
+    }
+  }
+
+  // Greedy: from the start, takes the step whose path so far, extrapolated
+  // at its end velocity over the goal points left, costs least, then the
+  // same from there until the path covers the goal. Only the first step is
+  // played; the next ones show where the walk heads.
+  Path path = root;
+  for (int depth = 0; depth < search_depth && path.covered() < n; ++depth) {
+    Path best_child;
+    bool found = false;
+    auto add = [&](Path&& _child) {
+      ++match_.paths;
+      finish(&_child);
+      if (!found || _child.estimate < best_child.estimate) {
+        best_child = std::move(_child);
+        found = true;
+      }
+    };
+    const bool after_end = path.steps.empty() ? _after_end : path.after_end;
+    for (const PoseEdge& edge : result_->exits[path.pose].edges) {
+      if (after_end && edge.to < 0) {
+        continue;  // Right after a clip end, not to one again.
+      }
+      for (int index : edge.transitions) {
+        const PoseTransition& transition = transitions[index];
+        const float entered = EnteredAt(*result_, index);
+        Path child = path;
+        float start = std::max(entered, transition.time - max_stay);
+        if (carries_on(path, transition.clip, entered, transition.time)) {
+          start = path.clip_end;
+        } else {
+          blend(&child, transition.clip, start);
+        }
+        play(&child, transition.clip, start, transition.time);
+        child.steps.push_back(index);
+        // At a clip end, the walk goes on from the same pose.
+        child.after_end = transition.to < 0;
+        if (!child.after_end) {
+          child.pose = transition.to;
+          child.poses.push_back(transition.to);
+        }
+        add(std::move(child));
+      }
+    }
+    for (int b = 0; b < static_cast<int>(bridges.size()); ++b) {
+      const PoseBridge& bridge = bridges[b];
+      if (bridge.from != path.pose || bridge.next_transition < 0) {
+        continue;
+      }
+      // Up to the bridge, blended into its other clip, played on to its
+      // next transition (as Pick does right after a bridge).
+      Path child = path;
+      float start = std::max(bridge.from_entered, bridge.from_time - max_stay);
+      if (carries_on(path, bridge.from_clip, bridge.from_entered, bridge.from_time)) {
+        start = path.clip_end;
+      } else {
+        blend(&child, bridge.from_clip, start);
+      }
+      play(&child, bridge.from_clip, start, bridge.from_time);
+      child.cost += blend_weight * bridge.difference;
+      const PoseTransition& next_transition = transitions[bridge.next_transition];
+      child.clip = bridge.to_clip;
+      child.clip_end = bridge.to_time;
+      play(&child, bridge.to_clip, bridge.to_time, next_transition.time);
+      child.steps.push_back(count + b);
+      child.after_end = next_transition.to < 0;
+      child.pose = child.after_end ? bridge.to : next_transition.to;
+      child.poses.push_back(child.pose);
+      add(std::move(child));
+    }
+    if (!found) {
+      break;  // Nowhere to go on: as far as it goes.
+    }
+    path = std::move(best_child);
+  }
+  if (path.steps.empty()) {
+    return -1;
+  }
+  const Path* best = &path;
+  match_.poses.assign(1, _from);
+  match_.poses.insert(match_.poses.end(), best->poses.begin(), best->poses.end());
+  match_.positions = best->positions;
+  match_.facings = best->facings;
+  // Points past the path: extrapolated, as estimated.
+  while (static_cast<int>(match_.positions.size()) < n) {
+    const float ahead = goal.times[match_.positions.size()] - best->elapsed;
+    match_.positions.push_back(best->position + best->velocity * ahead);
+    match_.facings.push_back(best->heading + facing_offset_);
+  }
+  match_.cost = best->estimate;
+  return best->steps.front();
 }
 
 void PoseWalk::Plan(float _now) {

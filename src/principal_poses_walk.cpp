@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include <GLFW/glfw3.h>
 #include <imgui.h>
 
 #include "common/core/anim_utils.h"
@@ -24,6 +25,7 @@
 #include "common/gui/pose_gallery.h"
 #include "common/core/pose_project.h"
 #include "common/core/pose_walk.h"
+#include "common/core/trajectory.h"
 #include "common/gui/project_bar.h"
 #include "common/gui/transition_graph.h"
 #include "common/core/pose_match.h"
@@ -63,6 +65,7 @@ OZZ_OPTIONS_DECLARE_BOOL(best_match, "Best match blend for the pose walk.", fals
 OZZ_OPTIONS_DECLARE_BOOL(best_k, "Finds the best cluster count once common poses are found.",
                          false, false)
 OZZ_OPTIONS_DECLARE_STRING(walk_tag, "Tag the pose walk goes to (see Go to tag).", "", false)
+OZZ_OPTIONS_DECLARE_BOOL(control, "Starts in character control mode.", false, false)
 
 namespace {
 
@@ -105,9 +108,15 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     }
     walk_on_result_ = OPTIONS_walk;
     best_k_on_result_ = OPTIONS_best_k;
-    walk_.target_tag = OPTIONS_walk_tag.value();
+    walk_tag_ = OPTIONS_walk_tag.value();
+    if (!walk_tag_.empty()) {
+      SetWalkMode(WalkMode::kTag);
+    }
     walk_.root_motion = OPTIONS_root_motion;
     walk_.best_match = OPTIONS_best_match;
+    if (OPTIONS_control) {
+      SetWalkMode(WalkMode::kControl);
+    }
     if (OPTIONS_clip.value()[0]) {
       StartPreview(OPTIONS_clip.value(), 0.f);
     }
@@ -153,6 +162,9 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     if (walk_.active()) {
       UpdateWalk(_dt);
     }
+    if (control()) {
+      UpdateControl(_dt);
+    }
     if (show_gallery_) {
       gallery_.Update(_dt, &character_);
     }
@@ -176,6 +188,9 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
         AddLabel(math::Float4x4::identity(), make_span(models_), "", preview_.clip.path(),
                  preview_.clip.time, preview_.clip.duration());
       }
+    }
+    if (control() && walk_.active()) {
+      success &= DrawControl(_renderer);
     }
     // Every common pose, in rows behind the displayed pose.
     if (show_gallery_ && !gallery_.empty()) {
@@ -374,6 +389,9 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     ozz::math::Box bounds;
     if (pose_valid_) {
       bounds = character_.Bounds(make_span(models_), math::Float4x4::identity());
+    }
+    if (control()) {
+      return bounds;  // The camera follows the character.
     }
     if (show_gallery_ && !gallery_.empty()) {
       // Clip skeleton poses: close enough to the character for framing.
@@ -1009,6 +1027,12 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     ImGui::SliderFloat("Play time", &gallery_.play_time, .1f, 10.f, "%.1f s",
                        ImGuiSliderFlags_Logarithmic);
     ImGui::SetItemTooltip("How long each picked frame's clip plays before the next pick.");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7.f);
+    ImGui::SliderFloat("##gallery_speed", &gallery_.speed, 0.f, 2.f, "speed %.2fx");
+    ImGui::SetItemTooltip(
+        "Playback speed of the gallery's clips (times the global speed);\n"
+        "the play time stays in real seconds.");
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::Checkbox("Debug text", &debug_text_);
@@ -1225,6 +1249,45 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       return;
     }
     UpdateWalk(0.f);
+    if (control()) {
+      ResetControl();
+    }
+  }
+
+  // Character control: the trajectory restarts from the character's root.
+  void ResetControl() {
+    math::Float3 root = math::Float3::zero();
+    if (pose_valid_) {
+      math::Store3PtrU(models_[0].cols[3], &root.x);
+    }
+    trajectory_.Reset(root);
+    desired_velocity_ = math::Float3::zero();
+    desired_facing_ = walk_.active() ? walk_.root_facing() : 0.f;
+    walk_.goal = {};
+  }
+
+  // Walk modes, exclusive: random walk, tag walk (heads for walk_tag_), or
+  // character control (root motion on). Only the tag walk sets the walk's
+  // target tag; the chosen tag is kept across modes.
+  enum class WalkMode { kRandom, kTag, kControl };
+
+  bool control() const { return walk_mode_ == WalkMode::kControl; }
+
+  void SetWalkMode(WalkMode _mode) {
+    if (_mode == walk_mode_) {
+      return;
+    }
+    walk_mode_ = _mode;
+    if (walk_mode_ == WalkMode::kTag && walk_tag_.empty() && !project_.tags.empty()) {
+      walk_tag_ = project_.tags.front();
+    }
+    walk_.target_tag = walk_mode_ == WalkMode::kTag ? walk_tag_ : std::string();
+    walk_.use_goal = control();
+    walk_.goal = {};
+    if (control()) {
+      walk_.root_motion = true;
+      ResetControl();
+    }
   }
 
   void StopWalk() {
@@ -1271,22 +1334,20 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     ImGui::EndDisabled();
   }
 
-  // Go to tag: the tag the walk heads for and stays in (none: random walk),
-  // and how it's doing. Always one line, so the UI below doesn't move.
+  // Tag walk: the tag the walk heads for and stays in, and how it's doing.
+  // Always one line, so the UI below doesn't move.
   void TagWalkGui() {
     std::string& target = walk_.target_tag;
-    if (!target.empty() &&
-        std::find(project_.tags.begin(), project_.tags.end(), target) == project_.tags.end()) {
-      target.clear();  // Removed from the project.
+    if (!walk_tag_.empty() &&
+        std::find(project_.tags.begin(), project_.tags.end(), walk_tag_) == project_.tags.end()) {
+      walk_tag_ = project_.tags.empty() ? std::string() : project_.tags.front();  // Removed.
     }
+    target = walk_tag_;
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 9.f);
-    if (ImGui::BeginCombo("##go_to_tag", target.empty() ? "random walk" : target.c_str())) {
-      if (ImGui::Selectable("random walk", target.empty())) {
-        target.clear();
-      }
+    if (ImGui::BeginCombo("##go_to_tag", target.empty() ? "pick a tag" : target.c_str())) {
       for (const std::string& tag : project_.tags) {
         if (ImGui::Selectable(tag.c_str(), tag == target)) {
-          target = tag;
+          walk_tag_ = target = tag;
         }
       }
       ImGui::EndCombo();
@@ -1301,7 +1362,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
         project_.tags.empty() ? "\nAdd tags under Pose set > Tags." : "");
     // Status, on its own line.
     if (!walk_.active() || target.empty()) {
-      ImGui::TextDisabled(target.empty() ? "no target tag" : "heads for %s when walking",
+      ImGui::TextDisabled(target.empty() ? "no tag: walks at random" : "heads for %s when walking",
                           target.c_str());
       return;
     }
@@ -1328,6 +1389,212 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
         ImGui::TextDisabled("heading for %s from the next pick", target.c_str());
         break;
     }
+  }
+
+  // Character control: the stick (gamepad left stick, else WASD), x right, y
+  // forward, length up to 1; *_run: run button held (Shift, gamepad RB or
+  // right trigger).
+  math::Float2 ReadStick(bool* _run) {
+    math::Float2 stick(0.f, 0.f);
+    *_run = false;
+    if (!ImGui::GetIO().WantCaptureKeyboard) {
+      stick.x = (ImGui::IsKeyDown(ImGuiKey_D) ? 1.f : 0.f) - (ImGui::IsKeyDown(ImGuiKey_A) ? 1.f : 0.f);
+      stick.y = (ImGui::IsKeyDown(ImGuiKey_W) ? 1.f : 0.f) - (ImGui::IsKeyDown(ImGuiKey_S) ? 1.f : 0.f);
+      *_run = ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift);
+    }
+    gamepad_name_.clear();
+    for (int joystick = GLFW_JOYSTICK_1; joystick <= GLFW_JOYSTICK_LAST; ++joystick) {
+      GLFWgamepadstate state;
+      if (!glfwJoystickIsGamepad(joystick) || !glfwGetGamepadState(joystick, &state)) {
+        continue;
+      }
+      gamepad_name_ = glfwGetGamepadName(joystick);
+      math::Float2 pad(state.axes[GLFW_GAMEPAD_AXIS_LEFT_X], -state.axes[GLFW_GAMEPAD_AXIS_LEFT_Y]);
+      const float length = std::sqrt(pad.x * pad.x + pad.y * pad.y);
+      const float kDeadZone = .15f;
+      if (length > kDeadZone && stick.x == 0.f && stick.y == 0.f) {
+        // Rescaled past the dead zone, so slow walks are reachable.
+        const float scaled = std::min(1.f, (length - kDeadZone) / (1.f - kDeadZone));
+        stick = math::Float2(pad.x / length * scaled, pad.y / length * scaled);
+      }
+      *_run |= state.buttons[GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER] == GLFW_PRESS ||
+               state.axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER] > 0.f;
+      break;
+    }
+    const float length = std::sqrt(stick.x * stick.x + stick.y * stick.y);
+    if (length > 1.f) {
+      stick = math::Float2(stick.x / length, stick.y / length);
+    }
+    return stick;
+  }
+
+  // Character control: the input as a desired velocity relative to the
+  // camera, the trajectory from the character's root, and that as the
+  // walk's goal (for its next pick).
+  void UpdateControl(float _dt) {
+    if (!walk_.active() || !pose_valid_ || _dt <= 0.f) {
+      return;
+    }
+    bool run = false;
+    const math::Float2 stick = ReadStick(&run);
+    // Camera axes on the ground.
+    const math::Float4x4 camera = Invert(CameraView());
+    math::Float3 right, back;
+    math::Store3PtrU(camera.cols[0], &right.x);
+    math::Store3PtrU(camera.cols[2], &back.x);
+    right.y = back.y = 0.f;
+    right = Length(right) > 1e-4f ? Normalize(right) : math::Float3(1.f, 0.f, 0.f);
+    const math::Float3 forward =
+        Length(back) > 1e-4f ? -Normalize(back) : math::Float3(0.f, 0.f, 1.f);
+    const float speed = run ? control_run_speed_ : control_walk_speed_;
+    desired_velocity_ = (right * stick.x + forward * stick.y) * speed;
+    // Faces where it's asked to go; released, keeps the last facing asked.
+    if (Length(desired_velocity_) > .1f) {
+      desired_facing_ = hyperpose::FacingOf(desired_velocity_);
+    }
+    trajectory_.Update(_dt, walk_.root_position(), walk_.root_facing(), desired_velocity_,
+                       desired_facing_);
+    hyperpose::PoseWalk::TrajectoryGoal& goal = walk_.goal;
+    goal = {};
+    for (const hyperpose::TrajectoryPoint& point : trajectory_.future()) {
+      goal.times.push_back(point.time);
+      goal.positions.push_back(point.position);
+      goal.facings.push_back(point.facing);
+      goal.velocities.push_back(point.velocity);
+    }
+  }
+
+  // Character control: the trajectory on the ground, history grey, future
+  // orange with facing ticks, the desired velocity green.
+  bool DrawControl(ozz::sample::Renderer* _renderer) {
+    const float kLift = .02f;  // Above the ground grid.
+    auto lifted = [&](const math::Float3& _p) { return math::Float3(_p.x, kLift, _p.z); };
+    const math::Float4x4 identity = math::Float4x4::identity();
+    bool success = true;
+    ozz::vector<math::Float3> history;
+    for (const hyperpose::TrajectoryPoint& point : trajectory_.history()) {
+      history.push_back(lifted(point.position));
+    }
+    if (history.size() > 1) {
+      success &= _renderer->DrawLineStrip(ozz::make_span(history), {.6f, .6f, .6f, 1.f}, identity);
+    }
+    if (history.empty()) {
+      return success;
+    }
+    ozz::vector<math::Float3> future = {history.back()};
+    ozz::vector<math::Float3> ticks;
+    for (const hyperpose::TrajectoryPoint& point : trajectory_.future()) {
+      const math::Float3 p = lifted(point.position);
+      future.push_back(p);
+      ticks.push_back(p);
+      ticks.push_back(p + math::Float3(std::sin(point.facing), 0.f, std::cos(point.facing)) * .25f);
+    }
+    const ozz::sample::Color kFuture = {1.f, .65f, .2f, 1.f};
+    success &= _renderer->DrawLineStrip(ozz::make_span(future), kFuture, identity);
+    success &= _renderer->DrawLines(ozz::make_span(ticks), kFuture, identity);
+    for (size_t i = 1; i < future.size(); ++i) {
+      success &= _renderer->DrawSphereIm(
+          .04f, math::Float4x4::Translation(math::simd_float4::Load(future[i].x, future[i].y, future[i].z, 1.f)),
+          kFuture);
+    }
+    const math::Float3 desired[] = {history.back(), history.back() + desired_velocity_ * .5f};
+    success &= _renderer->DrawLines(ozz::make_span(desired), {.3f, .9f, .3f, 1.f}, identity);
+    // The matched path, as predicted at the last pick, with facing ticks.
+    const hyperpose::PoseWalk::Match& match = walk_.match();
+    if (!match.positions.empty()) {
+      const ozz::sample::Color kMatch = {.3f, .6f, 1.f, 1.f};
+      ozz::vector<math::Float3> path;
+      ozz::vector<math::Float3> facings;
+      for (size_t i = 0; i < match.positions.size(); ++i) {
+        const math::Float3 p = lifted(match.positions[i]) + math::Float3(0.f, .01f, 0.f);
+        path.push_back(p);
+        facings.push_back(p);
+        facings.push_back(
+            p + math::Float3(std::sin(match.facings[i]), 0.f, std::cos(match.facings[i])) * .2f);
+      }
+      if (path.size() > 1) {
+        success &= _renderer->DrawLineStrip(ozz::make_span(path), kMatch, identity);
+      }
+      success &= _renderer->DrawLines(ozz::make_span(facings), kMatch, identity);
+    }
+    return success;
+  }
+
+  // Walk mode choice, one line.
+  void WalkModeGui() {
+    if (ImGui::RadioButton("Random walk", walk_mode_ == WalkMode::kRandom)) {
+      SetWalkMode(WalkMode::kRandom);
+    }
+    ImGui::SetItemTooltip(
+        "The walk picks the next pose at random, weighted by how often the\n"
+        "clips go there.");
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Tag walk", walk_mode_ == WalkMode::kTag)) {
+      SetWalkMode(WalkMode::kTag);
+    }
+    ImGui::SetItemTooltip("The walk heads for a tag and stays in it (below).");
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Character control", control())) {
+      SetWalkMode(WalkMode::kControl);
+    }
+    ImGui::SetItemTooltip(
+        "Gamepad left stick (RB / right trigger: run), or WASD (Shift: run),\n"
+        "relative to the camera, gives the desired velocity and facing. The\n"
+        "desired trajectory is predicted from the character (orange: 1/3, 2/3\n"
+        "and 1 s ahead, with facing; grey: the last second; green: desired\n"
+        "velocity). Root motion on; the camera follows the character.\n"
+        "At each pick, the walk greedily builds a path of transitions out of\n"
+        "the pose whose root motion follows the desired trajectory: at each\n"
+        "step, the transition fitting best so far (blue: the path's predicted\n"
+        "points, as of that pick). It plays the first transition; the next\n"
+        "pick searches again.");
+  }
+
+  // Character control status and speeds (in place of the tag line).
+  void ControlGui() {
+    ImGui::TextDisabled("%s, %.1f m/s (asked %.1f)",
+                        gamepad_name_.empty() ? "keyboard" : gamepad_name_.c_str(),
+                        Length(trajectory_.velocity()), Length(desired_velocity_));
+    const float width = ImGui::GetContentRegionAvail().x / 2.f - ImGui::GetStyle().ItemSpacing.x;
+    ImGui::SetNextItemWidth(width);
+    ImGui::SliderFloat("##walk_speed", &control_walk_speed_, .2f, 3.f, "walk %.1f m/s");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::SliderFloat("##run_speed", &control_run_speed_, 1.f, 6.f, "run %.1f m/s");
+    // The trajectory search.
+    const hyperpose::PoseWalk::Match& match = walk_.match();
+    if (match.cost < 0.f) {
+      ImGui::TextDisabled("no search yet");
+    } else {
+      std::string path;
+      for (int pose : match.poses) {
+        path += (path.empty() ? "" : " -> ") + hyperpose::PoseName(pose);
+      }
+      ImGui::TextDisabled("matched %s, cost %.2f (%d steps tried)", path.c_str(), match.cost,
+                          match.paths);
+    }
+    ImGui::SetNextItemWidth(width);
+    ImGui::SliderFloat("##facing_weight", &walk_.facing_weight, 0.f, 4.f, "facing %.2f m/rad");
+    ImGui::SetItemTooltip(
+        "Path cost: per desired point, the squared position error (m) plus\n"
+        "this times the facing error (radians), squared.");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::SliderFloat("##blend_weight", &walk_.blend_weight, 0.f, 4.f, "blends %.2f");
+    ImGui::SetItemTooltip(
+        "Path cost: plus this times the pose difference (m) of each blend\n"
+        "on the path, so smoother paths win when they follow as well.");
+    ImGui::SetNextItemWidth(width);
+    ImGui::SliderInt("##search_depth", &walk_.search_depth, 1, 24, "depth %d");
+    ImGui::SetItemTooltip("Transitions per path at most (it stops at 1 s ahead).");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::SliderFloat("##goal_velocity_weight", &walk_.goal_velocity_weight, 0.f, 2.f,
+                       "velocity %.2f s");
+    ImGui::SetItemTooltip(
+        "Path cost: plus, per desired point, this times the root velocity\n"
+        "error (m/s), squared: a velocity difference of 1 m/s counts as this\n"
+        "many meters (0: positions and facings only).");
   }
 
   void WalkGui() {
@@ -1360,7 +1627,18 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
                               "another clip.", segment.from + 1);
       }
     }
-    TagWalkGui();
+    WalkModeGui();
+    switch (walk_mode_) {
+      case WalkMode::kRandom:
+        ImGui::TextDisabled("random walk");  // Keeps the UI below in place.
+        break;
+      case WalkMode::kTag:
+        TagWalkGui();
+        break;
+      case WalkMode::kControl:
+        ControlGui();
+        break;
+    }
     const float width = ImGui::GetContentRegionAvail().x / 2.f - ImGui::GetStyle().ItemSpacing.x;
     ImGui::SetNextItemWidth(width);
     ImGui::SliderFloat("##max_stay", &walk_.max_stay, .1f, 20.f, "max stay %.1fs",
@@ -1561,6 +1839,15 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   std::vector<Label> labels_;
   bool debug_text_ = true;
   float play_speed_ = 1.f;  // Global playback speed (see PlaySpeedGui).
+  // Character control mode: input, desired motion and its trajectory.
+  WalkMode walk_mode_ = WalkMode::kRandom;
+  float control_walk_speed_ = 1.4f;  // m/s.
+  float control_run_speed_ = 3.f;    // m/s.
+  math::Float3 desired_velocity_ = math::Float3::zero();
+  float desired_facing_ = 0.f;
+  hyperpose::Trajectory trajectory_;
+  std::string walk_tag_;  // The tag walk's tag, kept across modes.
+  std::string gamepad_name_;  // Empty: none connected.
   hyperpose::TransitionGraph graph_;  // Transition graph window.
   std::vector<int> transition_example_;  // Per edge: next transition to play.
 };

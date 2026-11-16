@@ -105,7 +105,7 @@ void PoseGallery::Update(float _dt, CharacterView* _character) {
   for (size_t c = 0; c < slots_.size(); ++c) {
     Slot& slot = *slots_[c];
     slot.timer -= _dt;
-    slot.clip.Advance(_dt);  // Loops.
+    slot.clip.Advance(_dt * speed);  // Loops.
     if (slot.timer <= 0.f) {
       // Re-armed from the current play time, which the user may change.
       slot.timer = play_time;

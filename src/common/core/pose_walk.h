@@ -68,6 +68,49 @@ class PoseWalk {
   std::vector<bool> TaggedPoses(const CommonPoseResult& _result) const;
   // Per pose of _result, its share of frames from clips with target_tag.
   std::vector<float> TagShares(const CommonPoseResult& _result) const;
+  // Character control (motion matching over the transition graph): with a
+  // goal, each pick greedily builds a path of transitions (and bridges) out
+  // of the pose whose root motion follows the goal trajectory: at each step,
+  // the transition whose path so far, extrapolated at its end velocity,
+  // costs least. It plays the first step; the next pick searches again.
+  // Takes precedence over target_tag.
+  struct TrajectoryGoal {
+    std::vector<float> times;  // Ahead of now (s), increasing.
+    std::vector<ozz::math::Float3> positions;  // World, on the ground.
+    std::vector<float> facings;  // World (radians about Y, x = sin, z = cos).
+    std::vector<ozz::math::Float3> velocities;  // World, m/s.
+    bool empty() const { return times.empty(); }
+  };
+  TrajectoryGoal goal;
+  bool use_goal = false;
+  // Search settings: path cost = sum over goal points of the squared
+  // position error (m^2) + (facing_weight * facing error (rad))^2 +
+  // (goal_velocity_weight * root velocity error (m/s))^2, plus
+  // blend_weight * the pose difference (m) of each blend on the path.
+  float facing_weight = 1.f;          // m per radian.
+  float goal_velocity_weight = .3f;   // Seconds: 1 m/s counts as that many m.
+  float blend_weight = 1.f;
+  // Steps per path at most: the path ends once it covers the goal; a
+  // shorter one is extrapolated at its end velocity.
+  int search_depth = 12;
+  // The last search: its best path's poses (from the pose searched from),
+  // predicted root positions at the goal times (world), and cost.
+  struct Match {
+    std::vector<int> poses;
+    std::vector<ozz::math::Float3> positions;
+    std::vector<float> facings;  // World, as the goal's.
+    float cost = -1.f;           // < 0: no search yet.
+    int paths = 0;               // Candidate steps evaluated.
+  };
+  const Match& match() const { return match_; }
+  // The character's facing (as the goal's) from its root heading: the
+  // heading plus this offset, measured on the clips (their root heading
+  // against the direction they move in, while they move).
+  float facing_offset() const { return facing_offset_; }
+  // The character root on the ground and its facing, as of the last Update.
+  ozz::math::Float3 root_position() const { return crossfade_.root_position(); }
+  float root_facing() const { return crossfade_.root_heading() + facing_offset_; }
+
   // Starts walking from _pose (-1: a random one, weighted by frames). _result
   // and _skeleton must outlive the walk (or Stop it before they change).
   bool Start(const CommonPoseResult* _result,
@@ -108,6 +151,8 @@ class PoseWalk {
     // carried on into it, no blend.
     float difference = -1.f;
     bool continued = false;
+    // Picked by the trajectory search (see goal).
+    bool matched = false;
     // How it was picked for target_tag.
     enum class Tag {
       kOff,          // No target tag: random walk.
@@ -160,8 +205,17 @@ class PoseWalk {
   // Stops at the first 100% tagged pose reached. False if none can be
   // reached.
   bool PlanTagPath(int _from, int _start);
+  // Character control: the first step (a plan_ entry) of the greedy path out
+  // of _from following goal (see TrajectoryGoal), the playing segment
+  // carrying on until it reaches _from (unless _after_end or _jump). -1 if
+  // there's no step. Fills match_.
+  int SearchTrajectory(int _from, bool _after_end, bool _jump);
+  // Measures facing_offset_ on result_'s clips.
+  void MeasureFacingOffset();
 
   const CommonPoseResult* result_ = nullptr;
+  Match match_;
+  float facing_offset_ = 0.f;
   Segment segment_;
   // Picked next segment, waiting for the current clip to reach blend_at_.
   Segment next_;
