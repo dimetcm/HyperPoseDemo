@@ -205,7 +205,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     // Every common pose, in rows behind the displayed pose.
     if (show_gallery_ && !gallery_.empty()) {
       success &= gallery_.Draw(_renderer, &character_, draw_mesh_, draw_skeleton_);
-      for (int c = 0; c < gallery_.size(); ++c) {
+      for (int c = 0; c < gallery_.size() && gallery_text_; ++c) {
         const hyperpose::PoseGallery::Shown pose = gallery_.shown(c);
         std::string prefix = "#" + std::to_string(c + 1) + " ";
         if (pose.count > 1) {
@@ -1125,7 +1125,12 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     }
     ImGui::SameLine();
     ImGui::Checkbox("Debug text", &debug_text_);
-    ImGui::SetItemTooltip("Clip, time / duration and frame above each character.");
+    ImGui::SetItemTooltip("Clip, time / duration and frame above the characters.");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!debug_text_);
+    ImGui::Checkbox("Gallery text", &gallery_text_);
+    ImGui::SetItemTooltip("Debug text above the gallery's characters too.");
+    ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::Checkbox("Transition graph", &graph_.open);
     ImGui::SetItemTooltip("Window with the common poses and the transitions between them.");
@@ -1927,6 +1932,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
   };
   std::vector<Label> labels_;
   bool debug_text_ = true;
+  bool gallery_text_ = false;  // Debug text above the gallery's characters too.
   float play_speed_ = 1.f;  // Global playback speed (see PlaySpeedGui).
   // Character control mode: input, desired motion and its trajectory.
   WalkMode walk_mode_ = WalkMode::kRandom;
