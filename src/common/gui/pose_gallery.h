@@ -52,7 +52,7 @@ class PoseGallery {
   float sync_window = .5f;
   // Tints each pose's characters by its share of frames, from blue (the
   // least common pose) to red (the most common), see ShareColor.
-  bool color_by_share = false;
+  bool color_by_share = true;
 
   bool animated() const { return mode == Mode::kFrames || mode == Mode::kClips; }
 

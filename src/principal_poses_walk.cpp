@@ -66,7 +66,7 @@ OZZ_OPTIONS_DECLARE_BOOL(best_k, "Finds the best cluster count once common poses
                          false, false)
 OZZ_OPTIONS_DECLARE_STRING(walk_tag, "Tag the pose walk goes to (see Go to tag).", "", false)
 OZZ_OPTIONS_DECLARE_BOOL(control, "Starts in character control mode.", false, false)
-OZZ_OPTIONS_DECLARE_BOOL(color_by_share, "Tints the pose gallery by pose share.", false,
+OZZ_OPTIONS_DECLARE_BOOL(color_by_share, "Tints the pose gallery by pose share.", true,
                          false)
 OZZ_OPTIONS_DECLARE_STRING(gallery,"Pose gallery mode: still, frames, clips or clips_still.", "still",
                            false)
@@ -300,14 +300,38 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     }
   }
 
-  // Draws a clip skeleton pose, as the character (if shown) and/or skeleton.
+  // The common pose the main character is in: the walk's, the previewed
+  // clip's at its time (from its transitions), else the selected one's
+  // still frame. -1 if unknown (e.g. a previewed clip not in the result).
+  int ShownPose() const {
+    if (walk_.active() || !preview_.active) {
+      return pose_;
+    }
+    int pose = -1;
+    for (const hyperpose::PoseTransition& transition : result_.transitions) {
+      if (transition.clip < static_cast<int>(result_.clips.size()) &&
+          result_.clips[transition.clip] == preview_.clip.path() &&
+          transition.time <= preview_.clip.time + 1e-4f && transition.to >= 0) {
+        pose = transition.to;  // In clip, then time order: the last one.
+      }
+    }
+    return pose;
+  }
+
+  // Draws a clip skeleton pose, as the character (if shown) and/or skeleton;
+  // the character tinted as its pose in the gallery (see
+  // PoseGallery::color_by_share).
   bool DrawPose(ozz::sample::Renderer* _renderer,
                 ozz::span<const math::Float4x4> _models,
                 const math::Float4x4& _transform) {
     bool success = true;
     const bool show_character = draw_mesh_ && character_.posed();
     if (show_character) {
-      success &= character_.Draw(_renderer, _models, _transform);
+      const int pose = ShownPose();
+      const ozz::sample::Color color = pose >= 0 && pose < gallery_.size()
+                                           ? gallery_.PoseColor(pose)
+                                           : ozz::sample::kWhite;
+      success &= character_.Draw(_renderer, _models, _transform, color);
     }
     if (draw_skeleton_ || !show_character) {
       success &= _renderer->DrawPosture(skeleton(), _models, _transform);
