@@ -66,7 +66,7 @@ OZZ_OPTIONS_DECLARE_BOOL(best_k, "Finds the best cluster count once common poses
                          false, false)
 OZZ_OPTIONS_DECLARE_STRING(walk_tag, "Tag the pose walk goes to (see Go to tag).", "", false)
 OZZ_OPTIONS_DECLARE_BOOL(control, "Starts in character control mode.", false, false)
-OZZ_OPTIONS_DECLARE_STRING(gallery, "Pose gallery mode: still, frames or clips.", "still",
+OZZ_OPTIONS_DECLARE_STRING(gallery, "Pose gallery mode: still, frames, clips or clips_still.", "still",
                            false)
 
 namespace {
@@ -119,6 +119,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     const std::string gallery_mode = OPTIONS_gallery.value();
     gallery_.mode = gallery_mode == "frames"  ? hyperpose::PoseGallery::Mode::kFrames
                     : gallery_mode == "clips" ? hyperpose::PoseGallery::Mode::kClips
+                    : gallery_mode == "clips_still" ? hyperpose::PoseGallery::Mode::kClipsStill
                                               : hyperpose::PoseGallery::Mode::kStill;
     if (OPTIONS_control) {
       SetWalkMode(WalkMode::kControl);
@@ -1024,7 +1025,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     ImGui::SetItemTooltip("Every common pose, in rows behind, largest first.");
     ImGui::SameLine();
     using GalleryMode = hyperpose::PoseGallery::Mode;
-    const char* kGalleryModes[] = {"still", "random frames", "all clips"};
+    const char* kGalleryModes[] = {"still", "random frames", "all clips", "all clips still"};
     int gallery_mode = static_cast<int>(gallery_.mode);
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.f);
     if (ImGui::Combo("##gallery_mode", &gallery_mode, kGalleryModes,
@@ -1039,7 +1040,9 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
         "all clips: each pose overlays every stay of a clip in it (from where\n"
         "the clip enters the pose to where it leaves), in sync: each plays\n"
         "around its frame closest to the pose, over the same window,\n"
-        "looping, aligned to the origin.");
+        "looping, aligned to the origin.\n"
+        "all clips still: the same stays, each at its frame closest to the\n"
+        "pose.");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(-FLT_MIN);
     ImGui::SliderFloat("##spacing", &gallery_.spacing, .5f, 3.f, "spacing %.1f m");
@@ -1051,13 +1054,15 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
         "the play time stays in real seconds.");
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (gallery_.mode == GalleryMode::kClips) {
+    if (gallery_.mode == GalleryMode::kClips || gallery_.mode == GalleryMode::kClipsStill) {
+      ImGui::BeginDisabled(gallery_.mode != GalleryMode::kClips);
       ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7.f);
       ImGui::SliderFloat("##sync_window", &gallery_.sync_window, 0.f, 2.f, "window %.2f s");
       ImGui::SetItemTooltip(
           "All clips: each stay plays from this long before its frame closest\n"
           "to the pose to this long after (clip time), all in sync, looping.\n"
           "0: the closest frames, still.");
+      ImGui::EndDisabled();
     } else {
       ImGui::BeginDisabled(gallery_.mode != GalleryMode::kFrames);
       ImGui::SetNextItemWidth(ImGui::GetFontSize() * 9.f);

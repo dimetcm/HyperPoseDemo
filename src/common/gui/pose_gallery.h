@@ -5,7 +5,9 @@
 // skinned once; random frames, each plays its clips from weighted random
 // frames of its pose; clips, each overlays every stay of a clip in its pose
 // (from where the clip enters it to where it leaves), in sync: each played
-// around its frame closest to the pose, over the same window, looping.
+// around its frame closest to the pose, over the same window, looping;
+// clips still, the same stays at their frames closest to the pose, skinned
+// once.
 
 #include <filesystem>
 #include <memory>
@@ -38,7 +40,7 @@ class PoseGallery {
   PoseGallery();
   ~PoseGallery();
 
-  enum class Mode { kStill, kFrames, kClips };
+  enum class Mode { kStill, kFrames, kClips, kClipsStill };
 
   // Settings.
   Mode mode = Mode::kStill;
@@ -49,7 +51,7 @@ class PoseGallery {
   // (s, clip time).
   float sync_window = .5f;
 
-  bool animated() const { return mode != Mode::kStill; }
+  bool animated() const { return mode == Mode::kFrames || mode == Mode::kClips; }
 
   // Rebuilds the gallery for the common poses of _result, which must have
   // been found for _skeleton (that must outlive the gallery). Returns false,
@@ -104,6 +106,7 @@ class PoseGallery {
     float anchor = 0.f;  // Its frame closest to the pose (s).
     float time = 0.f;    // Playing.
     ozz::vector<ozz::math::Float4x4> models;
+    CharacterView::Baked baked;  // Clips still: at its anchor.
   };
 
   bool PickFrame(int _c);
@@ -113,7 +116,9 @@ class PoseGallery {
   // Clips mode: the stays of every pose, and their clips loaded, on first
   // use.
   bool BuildStays();
-  void UpdateStays(float _dt);
+  // Clips: advances the shared phase by _dt and poses the stays; clips
+  // still (_still): poses them at their anchors, once.
+  void UpdateStays(float _dt, bool _still);
   bool Baked(const CharacterView& _character) const;
   void Bake(CharacterView* _character);
 
@@ -133,6 +138,8 @@ class PoseGallery {
   std::vector<std::unique_ptr<ClipPlayer>> players_;  // Per clip, shared by stays.
   bool stays_built_ = false;
   float phase_ = 0.f;  // Shared by the stays: time from their anchors (s).
+  bool stays_at_anchor_ = false;  // Stays posed at their anchors.
+  int stays_baked_generation_ = -1;  // Character generation of Stay::baked.
   std::mt19937 rng_;
 };
 

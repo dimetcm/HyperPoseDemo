@@ -83,6 +83,8 @@ void PoseGallery::Clear() {
   stays_.clear();
   players_.clear();
   stays_built_ = false;
+  stays_at_anchor_ = false;
+  stays_baked_generation_ = -1;
 }
 
 bool PoseGallery::PickFrame(int _c) {
@@ -151,22 +153,32 @@ bool PoseGallery::BuildStays() {
   return true;
 }
 
-void PoseGallery::UpdateStays(float _dt) {
+void PoseGallery::UpdateStays(float _dt, bool _still) {
   if (!stays_built_ && !BuildStays()) {
     return;
   }
-  // One phase for all, from -sync_window to sync_window, in a loop.
-  const float window = std::max(sync_window, 0.f);
-  phase_ += _dt * speed;
-  if (phase_ > window || phase_ < -window) {
-    phase_ = -window;
+  if (_still && stays_at_anchor_) {
+    return;
   }
+  // One phase for all, from -sync_window to sync_window, in a loop; still,
+  // 0 (the anchors).
+  float phase = 0.f;
+  if (!_still) {
+    const float window = std::max(sync_window, 0.f);
+    phase_ += _dt * speed;
+    if (phase_ > window || phase_ < -window) {
+      phase_ = -window;
+    }
+    phase = phase_;
+  }
+  stays_at_anchor_ = _still;
+  stays_baked_generation_ = -1;  // Posed anew.
   for (std::vector<Stay>& stays : stays_) {
     for (Stay& stay : stays) {
       ClipPlayer& player = *players_[stay.clip];
       // Held at the clip ends (the motion's start: not a leading bind pose).
       const float start = std::min(MotionStart(stay.clip), player.duration());
-      stay.time = std::clamp(stay.anchor + phase_, start, player.duration());
+      stay.time = std::clamp(stay.anchor + phase, start, player.duration());
       if (player.Sample(stay.time, make_span(stay.models))) {
         AlignToOrigin(make_span(stay.models), heading_axis_);
       }
@@ -182,7 +194,19 @@ void PoseGallery::Update(float _dt, CharacterView* _character) {
     return;
   }
   if (mode == Mode::kClips) {
-    UpdateStays(_dt);
+    UpdateStays(_dt, false);
+    return;
+  }
+  if (mode == Mode::kClipsStill) {
+    UpdateStays(_dt, true);
+    if (_character->posed() && stays_baked_generation_ != _character->generation()) {
+      for (std::vector<Stay>& stays : stays_) {
+        for (Stay& stay : stays) {
+          _character->Bake(make_span(stay.models), &stay.baked);
+        }
+      }
+      stays_baked_generation_ = _character->generation();
+    }
     return;
   }
   for (size_t c = 0; c < slots_.size(); ++c) {
@@ -226,14 +250,18 @@ bool PoseGallery::Draw(ozz::sample::Renderer* _renderer,
                        CharacterView* _character, bool _draw_mesh,
                        bool _draw_skeleton) {
   bool success = true;
-  if (mode == Mode::kClips) {
-    // Every stay overlaid.
-    const bool show_character = _draw_mesh && _character->posed();
+  if (mode == Mode::kClips || mode == Mode::kClipsStill) {
+    // Every stay overlaid; still, skinned once.
+    const bool still = mode == Mode::kClipsStill;
+    const bool show_character =
+        _draw_mesh && _character->posed() &&
+        (!still || stays_baked_generation_ == _character->generation());
     for (int c = 0; c < size() && c < static_cast<int>(stays_.size()); ++c) {
       const math::Float4x4 transform = Transform(c);
       for (const Stay& stay : stays_[c]) {
         if (show_character) {
-          success &= _character->Draw(_renderer, make_span(stay.models), transform);
+          success &= still ? _character->DrawBaked(_renderer, stay.baked, transform)
+                           : _character->Draw(_renderer, make_span(stay.models), transform);
         }
         if (_draw_skeleton || !show_character) {
           success &= _renderer->DrawPosture(*skeleton_, make_span(stay.models), transform);
@@ -262,10 +290,11 @@ bool PoseGallery::Draw(ozz::sample::Renderer* _renderer,
 }
 
 PoseGallery::Shown PoseGallery::shown(int _c) const {
-  if (mode == Mode::kClips && _c < static_cast<int>(stays_.size()) && !stays_[_c].empty()) {
+  if ((mode == Mode::kClips || mode == Mode::kClipsStill) &&
+      _c < static_cast<int>(stays_.size()) && !stays_[_c].empty()) {
     const Stay& stay = stays_[_c].front();
     Shown shown = {make_span(stay.models), &result_.clips[stay.clip], stay.time,
-                   players_[stay.clip]->duration()};
+                   mode == Mode::kClips ? players_[stay.clip]->duration() : -1.f};
     shown.count = static_cast<int>(stays_[_c].size());
     return shown;
   }
