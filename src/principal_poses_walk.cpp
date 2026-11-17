@@ -66,6 +66,8 @@ OZZ_OPTIONS_DECLARE_BOOL(best_k, "Finds the best cluster count once common poses
                          false, false)
 OZZ_OPTIONS_DECLARE_STRING(walk_tag, "Tag the pose walk goes to (see Go to tag).", "", false)
 OZZ_OPTIONS_DECLARE_BOOL(control, "Starts in character control mode.", false, false)
+OZZ_OPTIONS_DECLARE_STRING(gallery, "Pose gallery mode: still, frames or clips.", "still",
+                           false)
 
 namespace {
 
@@ -114,6 +116,10 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     }
     walk_.root_motion = OPTIONS_root_motion;
     walk_.best_match = OPTIONS_best_match;
+    const std::string gallery_mode = OPTIONS_gallery.value();
+    gallery_.mode = gallery_mode == "frames"  ? hyperpose::PoseGallery::Mode::kFrames
+                    : gallery_mode == "clips" ? hyperpose::PoseGallery::Mode::kClips
+                                              : hyperpose::PoseGallery::Mode::kStill;
     if (OPTIONS_control) {
       SetWalkMode(WalkMode::kControl);
     }
@@ -197,8 +203,11 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
       success &= gallery_.Draw(_renderer, &character_, draw_mesh_, draw_skeleton_);
       for (int c = 0; c < gallery_.size(); ++c) {
         const hyperpose::PoseGallery::Shown pose = gallery_.shown(c);
-        AddLabel(gallery_.Transform(c), pose.models,
-                 "#" + std::to_string(c + 1) + " ", *pose.clip, pose.time,
+        std::string prefix = "#" + std::to_string(c + 1) + " ";
+        if (pose.count > 1) {
+          prefix += std::to_string(pose.count) + " stays, first: ";
+        }
+        AddLabel(gallery_.Transform(c), pose.models, prefix, *pose.clip, pose.time,
                  pose.duration);
       }
     }
@@ -1014,26 +1023,49 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
     ImGui::Checkbox("Show all common poses", &show_gallery_);
     ImGui::SetItemTooltip("Every common pose, in rows behind, largest first.");
     ImGui::SameLine();
-    ImGui::Checkbox("Animate", &gallery_.animate);
+    using GalleryMode = hyperpose::PoseGallery::Mode;
+    const char* kGalleryModes[] = {"still", "random frames", "all clips"};
+    int gallery_mode = static_cast<int>(gallery_.mode);
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.f);
+    if (ImGui::Combo("##gallery_mode", &gallery_mode, kGalleryModes,
+                     IM_ARRAYSIZE(kGalleryModes))) {
+      gallery_.mode = static_cast<GalleryMode>(gallery_mode);
+    }
     ImGui::SetItemTooltip(
-        "Each pose plays its clips from a random frame of the pose, switching\n"
-        "after the play time. Frames closer to the pose are picked more often.\n"
-        "Off: most typical frame, still (cheaper to draw).");
+        "still: each pose's most typical frame (cheapest to draw).\n"
+        "random frames: each pose plays its clips from a random frame of the\n"
+        "pose, switching after the play time; frames closer to the pose are\n"
+        "picked more often.\n"
+        "all clips: each pose overlays every stay of a clip in it (from where\n"
+        "the clip enters the pose to where it leaves), in sync: each plays\n"
+        "around its frame closest to the pose, over the same window,\n"
+        "looping, aligned to the origin.");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(-FLT_MIN);
     ImGui::SliderFloat("##spacing", &gallery_.spacing, .5f, 3.f, "spacing %.1f m");
-    ImGui::BeginDisabled(!gallery_.animate);
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * .5f);
-    ImGui::SliderFloat("Play time", &gallery_.play_time, .1f, 10.f, "%.1f s",
-                       ImGuiSliderFlags_Logarithmic);
-    ImGui::SetItemTooltip("How long each picked frame's clip plays before the next pick.");
-    ImGui::SameLine();
+    ImGui::BeginDisabled(!gallery_.animated());
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7.f);
     ImGui::SliderFloat("##gallery_speed", &gallery_.speed, 0.f, 2.f, "speed %.2fx");
     ImGui::SetItemTooltip(
         "Playback speed of the gallery's clips (times the global speed);\n"
         "the play time stays in real seconds.");
     ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (gallery_.mode == GalleryMode::kClips) {
+      ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7.f);
+      ImGui::SliderFloat("##sync_window", &gallery_.sync_window, 0.f, 2.f, "window %.2f s");
+      ImGui::SetItemTooltip(
+          "All clips: each stay plays from this long before its frame closest\n"
+          "to the pose to this long after (clip time), all in sync, looping.\n"
+          "0: the closest frames, still.");
+    } else {
+      ImGui::BeginDisabled(gallery_.mode != GalleryMode::kFrames);
+      ImGui::SetNextItemWidth(ImGui::GetFontSize() * 9.f);
+      ImGui::SliderFloat("##play_time", &gallery_.play_time, .1f, 10.f, "play time %.1f s",
+                         ImGuiSliderFlags_Logarithmic);
+      ImGui::SetItemTooltip("How long each picked frame's clip plays before the next pick.");
+      ImGui::EndDisabled();
+    }
     ImGui::SameLine();
     ImGui::Checkbox("Debug text", &debug_text_);
     ImGui::SetItemTooltip("Clip, time / duration and frame above each character.");

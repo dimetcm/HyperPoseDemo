@@ -1,9 +1,11 @@
 #pragma once
 
-// Gallery of common poses: one character per common pose, in rows behind the
-// origin, largest pose first. Animated, each plays its clips from weighted
-// random frames of its pose; still, each shows its most typical frame, skinned
-// once.
+// Gallery of common poses: one slot per common pose, in rows behind the
+// origin, largest pose first. Still, each shows its most typical frame,
+// skinned once; random frames, each plays its clips from weighted random
+// frames of its pose; clips, each overlays every stay of a clip in its pose
+// (from where the clip enters it to where it leaves), in sync: each played
+// around its frame closest to the pose, over the same window, looping.
 
 #include <filesystem>
 #include <memory>
@@ -36,11 +38,18 @@ class PoseGallery {
   PoseGallery();
   ~PoseGallery();
 
+  enum class Mode { kStill, kFrames, kClips };
+
   // Settings.
-  bool animate = false;
+  Mode mode = Mode::kStill;
   float spacing = 1.f;    // Between characters (m).
-  float play_time = 1.f;  // Animated: play time of each picked frame (s).
+  float play_time = 1.f;  // Frames: play time of each picked frame (s).
   float speed = .2f;      // Animated: clips' playback speed (time scale).
+  // Clips: played before and after each stay's frame closest to the pose
+  // (s, clip time).
+  float sync_window = .5f;
+
+  bool animated() const { return mode != Mode::kStill; }
 
   // Rebuilds the gallery for the common poses of _result, which must have
   // been found for _skeleton (that must outlive the gallery). Returns false,
@@ -63,12 +72,13 @@ class PoseGallery {
             bool _draw_mesh, bool _draw_skeleton);
 
   // What pose _c shows: the clip and time, and duration (negative for a still
-  // frame).
+  // frame). Clips: the first stay, and how many are overlaid.
   struct Shown {
     ozz::span<const ozz::math::Float4x4> models;
     const std::filesystem::path* clip;
     float time;
     float duration;
+    int count = 1;
   };
   Shown shown(int _c) const;
 
@@ -88,7 +98,22 @@ class PoseGallery {
     ozz::vector<ozz::math::Float4x4> models;
   };
 
+  // A clip's stay in a pose, played around anchor (clips mode).
+  struct Stay {
+    int clip = -1;  // Index in result_.clips.
+    float anchor = 0.f;  // Its frame closest to the pose (s).
+    float time = 0.f;    // Playing.
+    ozz::vector<ozz::math::Float4x4> models;
+  };
+
   bool PickFrame(int _c);
+  // Where clip _clip's motion starts (s): after a leading bind pose, if any
+  // (see PoseFeatures::first_frame).
+  float MotionStart(int _clip) const;
+  // Clips mode: the stays of every pose, and their clips loaded, on first
+  // use.
+  bool BuildStays();
+  void UpdateStays(float _dt);
   bool Baked(const CharacterView& _character) const;
   void Bake(CharacterView* _character);
 
@@ -104,6 +129,10 @@ class PoseGallery {
   int baked_generation_ = -1;  // Character generation of baked_.
 
   std::vector<std::unique_ptr<Slot>> slots_;
+  std::vector<std::vector<Stay>> stays_;  // Per pose.
+  std::vector<std::unique_ptr<ClipPlayer>> players_;  // Per clip, shared by stays.
+  bool stays_built_ = false;
+  float phase_ = 0.f;  // Shared by the stays: time from their anchors (s).
   std::mt19937 rng_;
 };
 

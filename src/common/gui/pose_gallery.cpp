@@ -80,6 +80,9 @@ void PoseGallery::Clear() {
   baked_.clear();
   baked_generation_ = -1;
   slots_.clear();
+  stays_.clear();
+  players_.clear();
+  stays_built_ = false;
 }
 
 bool PoseGallery::PickFrame(int _c) {
@@ -95,17 +98,102 @@ bool PoseGallery::PickFrame(int _c) {
   return true;
 }
 
+float PoseGallery::MotionStart(int _clip) const {
+  if (_clip < 0 || _clip >= static_cast<int>(result_.features.size())) {
+    return 0.f;
+  }
+  const PoseFeatures& features = result_.features[_clip];
+  return features.frame_rate > 0.f ? features.first_frame / features.frame_rate : 0.f;
+}
+
+bool PoseGallery::BuildStays() {
+  stays_built_ = true;
+  stays_.assign(result_.poses.size(), {});
+  players_.clear();
+  players_.resize(result_.clips.size());
+  // Every transition into a pose starts a stay, until the clip's next
+  // transition (each clip's transitions end with its clip end).
+  const std::vector<PoseTransition>& transitions = result_.transitions;
+  for (size_t i = 0; i + 1 < transitions.size(); ++i) {
+    const PoseTransition& in = transitions[i];
+    const PoseTransition& out = transitions[i + 1];
+    if (in.to < 0 || out.clip != in.clip) {
+      continue;
+    }
+    std::unique_ptr<ClipPlayer>& player = players_[in.clip];
+    if (!player) {
+      player = std::make_unique<ClipPlayer>();
+      if (!player->Load(result_.clips[in.clip], *skeleton_)) {
+        error_ = "Failed to load " + result_.clips[in.clip].filename().string();
+        stays_.clear();
+        players_.clear();
+        return false;
+      }
+    }
+    Stay stay;
+    stay.clip = in.clip;
+    // The anchor: the stay's frame closest to the pose (its middle if none
+    // was clustered, with a stride).
+    const float end = std::max(out.time, in.time);
+    stay.anchor = (in.time + end) * .5f;
+    float closest = -1.f;
+    for (const CommonPose::Frame& frame : result_.poses[in.to].frames) {
+      if (frame.clip == in.clip && frame.time >= in.time - 1e-4f && frame.time < end &&
+          (closest < 0.f || frame.distance < closest)) {
+        closest = frame.distance;
+        stay.anchor = frame.time;
+      }
+    }
+    stay.time = stay.anchor;
+    stay.models = still_[in.to];  // Until first sampled.
+    stays_[in.to].push_back(std::move(stay));
+  }
+  return true;
+}
+
+void PoseGallery::UpdateStays(float _dt) {
+  if (!stays_built_ && !BuildStays()) {
+    return;
+  }
+  // One phase for all, from -sync_window to sync_window, in a loop.
+  const float window = std::max(sync_window, 0.f);
+  phase_ += _dt * speed;
+  if (phase_ > window || phase_ < -window) {
+    phase_ = -window;
+  }
+  for (std::vector<Stay>& stays : stays_) {
+    for (Stay& stay : stays) {
+      ClipPlayer& player = *players_[stay.clip];
+      // Held at the clip ends (the motion's start: not a leading bind pose).
+      const float start = std::min(MotionStart(stay.clip), player.duration());
+      stay.time = std::clamp(stay.anchor + phase_, start, player.duration());
+      if (player.Sample(stay.time, make_span(stay.models))) {
+        AlignToOrigin(make_span(stay.models), heading_axis_);
+      }
+    }
+  }
+}
+
 void PoseGallery::Update(float _dt, CharacterView* _character) {
-  if (!animate) {
+  if (mode == Mode::kStill) {
     if (!still_.empty() && _character->posed() && !Baked(*_character)) {
       Bake(_character);
     }
+    return;
+  }
+  if (mode == Mode::kClips) {
+    UpdateStays(_dt);
     return;
   }
   for (size_t c = 0; c < slots_.size(); ++c) {
     Slot& slot = *slots_[c];
     slot.timer -= _dt;
     slot.clip.Advance(_dt * speed);  // Loops.
+    // Looped past the motion's start (onto a leading bind pose): back to it.
+    const int clip = result_.poses[c].frames[slot.frame].clip;
+    if (slot.clip.time < MotionStart(clip)) {
+      slot.clip.time = std::min(MotionStart(clip), slot.clip.duration());
+    }
     if (slot.timer <= 0.f) {
       // Re-armed from the current play time, which the user may change.
       slot.timer = play_time;
@@ -138,13 +226,29 @@ bool PoseGallery::Draw(ozz::sample::Renderer* _renderer,
                        CharacterView* _character, bool _draw_mesh,
                        bool _draw_skeleton) {
   bool success = true;
+  if (mode == Mode::kClips) {
+    // Every stay overlaid.
+    const bool show_character = _draw_mesh && _character->posed();
+    for (int c = 0; c < size() && c < static_cast<int>(stays_.size()); ++c) {
+      const math::Float4x4 transform = Transform(c);
+      for (const Stay& stay : stays_[c]) {
+        if (show_character) {
+          success &= _character->Draw(_renderer, make_span(stay.models), transform);
+        }
+        if (_draw_skeleton || !show_character) {
+          success &= _renderer->DrawPosture(*skeleton_, make_span(stay.models), transform);
+        }
+      }
+    }
+    return success;
+  }
   const bool show_character =
-      _draw_mesh && (animate ? _character->posed() : Baked(*_character));
+      _draw_mesh && (animated() ? _character->posed() : Baked(*_character));
   for (int c = 0; c < size(); ++c) {
     const math::Float4x4 transform = Transform(c);
     const Shown pose = shown(c);
     if (show_character) {
-      if (animate) {
+      if (animated()) {
         success &= _character->Draw(_renderer, pose.models, transform);
       } else {
         success &= _character->DrawBaked(_renderer, baked_[c], transform);
@@ -158,7 +262,14 @@ bool PoseGallery::Draw(ozz::sample::Renderer* _renderer,
 }
 
 PoseGallery::Shown PoseGallery::shown(int _c) const {
-  if (animate) {
+  if (mode == Mode::kClips && _c < static_cast<int>(stays_.size()) && !stays_[_c].empty()) {
+    const Stay& stay = stays_[_c].front();
+    Shown shown = {make_span(stay.models), &result_.clips[stay.clip], stay.time,
+                   players_[stay.clip]->duration()};
+    shown.count = static_cast<int>(stays_[_c].size());
+    return shown;
+  }
+  if (mode == Mode::kFrames) {
     const Slot& slot = *slots_[_c];
     return {make_span(slot.models), &slot.clip.path(), slot.clip.time,
             slot.clip.duration()};
