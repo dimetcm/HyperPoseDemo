@@ -50,6 +50,9 @@ class PoseGallery {
   // Clips: played before and after each stay's frame closest to the pose
   // (s, clip time).
   float sync_window = .5f;
+  // Tints each pose's characters by its share of frames, from blue (the
+  // least common pose) to red (the most common), see ShareColor.
+  bool color_by_share = false;
 
   bool animated() const { return mode == Mode::kFrames || mode == Mode::kClips; }
 
@@ -83,6 +86,14 @@ class PoseGallery {
     int count = 1;
   };
   Shown shown(int _c) const;
+
+  // Pose _c's share of the frames (0..1).
+  float Share(int _c) const;
+  // The tint of pose _c (white unless color_by_share).
+  ozz::sample::Color PoseColor(int _c) const;
+  // The heat scale: _t 0 (least common) blue, cyan, green, yellow, 1 (most
+  // common) red.
+  static ozz::sample::Color ShareColor(float _t);
 
   // Placement of pose _c.
   ozz::math::Float4x4 Transform(int _c) const;

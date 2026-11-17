@@ -164,7 +164,8 @@ class RendererImpl : public Renderer {
   virtual ozz::unique_ptr<GpuMesh> CreateGpuMesh(const Mesh& _mesh);
   virtual bool DrawGpuMesh(const GpuMesh& _mesh,
                            span<const math::Float4x4> _skinning_matrices,
-                           const ozz::math::Float4x4& _transform);
+                           const ozz::math::Float4x4& _transform,
+                           const Color& _color = kWhite);
 
   // A GpuMesh's GPU data. Deleted with the mesh, or with the renderer if it
   // goes first (the GL context is gone after it).

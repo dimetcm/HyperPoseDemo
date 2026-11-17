@@ -1539,16 +1539,18 @@ ozz::unique_ptr<Renderer::GpuMesh> RendererImpl::CreateGpuMesh(
 
 bool RendererImpl::DrawGpuMesh(const GpuMesh& _mesh,
                                span<const math::Float4x4> _skinning_matrices,
-                               const ozz::math::Float4x4& _transform) {
+                               const ozz::math::Float4x4& _transform,
+                               const Color& _color) {
   const GpuMeshImpl& mesh = static_cast<const GpuMeshImpl&>(_mesh);
   if (!mesh.vbo || !skinned_ambient_shader ||
       static_cast<int>(_skinning_matrices.size()) < mesh.num_joints) {
     return false;
   }
   GL(BindBuffer(GL_ARRAY_BUFFER, mesh.vbo));
+  const float color[4] = {_color.r, _color.g, _color.b, 1.f};  // Opaque.
   skinned_ambient_shader->Bind(
       _transform, camera()->view_proj(),
-      _skinning_matrices.subspan(0, static_cast<size_t>(mesh.num_joints)));
+      _skinning_matrices.subspan(0, static_cast<size_t>(mesh.num_joints)), color);
   GL(BindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.ibo));
   static_assert(sizeof(Mesh::TriangleIndices::value_type) == 2,
                 "Expects 2 bytes indices.");

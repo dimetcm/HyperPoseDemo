@@ -49,12 +49,14 @@ class CharacterView {
   ozz::math::Box Bounds(ozz::span<const ozz::math::Float4x4> _clip_models,
                         const ozz::math::Float4x4& _transform) const;
 
-  // Draws the skinned meshes in a clip pose. Meshes are skinned on the GPU
-  // (uploaded once per character, see Renderer::CreateGpuMesh), on the CPU
-  // when they can't be.
+  // Draws the skinned meshes in a clip pose, tinted by _color. Meshes are
+  // skinned on the GPU (uploaded once per character, see
+  // Renderer::CreateGpuMesh), on the CPU when they can't be (then
+  // untinted).
   bool Draw(ozz::sample::Renderer* _renderer,
             ozz::span<const ozz::math::Float4x4> _clip_models,
-            const ozz::math::Float4x4& _transform);
+            const ozz::math::Float4x4& _transform,
+            const ozz::sample::Color& _color = ozz::sample::kWhite);
 
   // A clip pose's skinning matrices, per mesh: computed once by Bake (the
   // posing and retargeting), for a pose drawn many times by DrawBaked.
@@ -62,7 +64,8 @@ class CharacterView {
   using Baked = std::vector<ozz::vector<ozz::math::Float4x4>>;
   bool Bake(ozz::span<const ozz::math::Float4x4> _clip_models, Baked* _baked);
   bool DrawBaked(ozz::sample::Renderer* _renderer, const Baked& _baked,
-                 const ozz::math::Float4x4& _transform);
+                 const ozz::math::Float4x4& _transform,
+                 const ozz::sample::Color& _color = ozz::sample::kWhite);
 
   // Character selection combo and status. Returns true on selection change.
   bool DrawGui();
@@ -89,7 +92,7 @@ class CharacterView {
   // Draws mesh _mesh, on the GPU if it has a GPU mesh.
   bool DrawMesh(ozz::sample::Renderer* _renderer, size_t _mesh,
                 ozz::span<ozz::math::Float4x4> _skinning_matrices,
-                const ozz::math::Float4x4& _transform);
+                const ozz::math::Float4x4& _transform, const ozz::sample::Color& _color);
 
   std::vector<Character> characters_;
   int index_ = -1;

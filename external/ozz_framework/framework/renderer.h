@@ -188,10 +188,12 @@ class Renderer {
   virtual ozz::unique_ptr<GpuMesh> CreateGpuMesh(const Mesh& _mesh) = 0;
 
   // Draws _mesh (from CreateGpuMesh) skinned by _skinning_matrices, one per
-  // mesh joint as for DrawSkinnedMesh, at _transform.
+  // mesh joint as for DrawSkinnedMesh, at _transform, tinted by _color
+  // (opaque: its alpha is ignored).
   virtual bool DrawGpuMesh(const GpuMesh& _mesh,
                            span<const math::Float4x4> _skinning_matrices,
-                           const ozz::math::Float4x4& _transform) = 0;
+                           const ozz::math::Float4x4& _transform,
+                           const Color& _color = kWhite) = 0;
 
   // Renders a mesh at a specified location.
   virtual bool DrawMesh(const Mesh& _mesh,

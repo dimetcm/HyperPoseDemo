@@ -260,8 +260,10 @@ bool PoseGallery::Draw(ozz::sample::Renderer* _renderer,
       const math::Float4x4 transform = Transform(c);
       for (const Stay& stay : stays_[c]) {
         if (show_character) {
-          success &= still ? _character->DrawBaked(_renderer, stay.baked, transform)
-                           : _character->Draw(_renderer, make_span(stay.models), transform);
+          success &= still ? _character->DrawBaked(_renderer, stay.baked, transform,
+                                                   PoseColor(c))
+                           : _character->Draw(_renderer, make_span(stay.models), transform,
+                                              PoseColor(c));
         }
         if (_draw_skeleton || !show_character) {
           success &= _renderer->DrawPosture(*skeleton_, make_span(stay.models), transform);
@@ -277,9 +279,9 @@ bool PoseGallery::Draw(ozz::sample::Renderer* _renderer,
     const Shown pose = shown(c);
     if (show_character) {
       if (animated()) {
-        success &= _character->Draw(_renderer, pose.models, transform);
+        success &= _character->Draw(_renderer, pose.models, transform, PoseColor(c));
       } else {
-        success &= _character->DrawBaked(_renderer, baked_[c], transform);
+        success &= _character->DrawBaked(_renderer, baked_[c], transform, PoseColor(c));
       }
     }
     if (_draw_skeleton || !show_character) {
@@ -287,6 +289,48 @@ bool PoseGallery::Draw(ozz::sample::Renderer* _renderer,
     }
   }
   return success;
+}
+
+float PoseGallery::Share(int _c) const {
+  size_t total = 0;
+  for (const CommonPose& pose : result_.poses) {
+    total += pose.frames.size();
+  }
+  return total ? static_cast<float>(result_.poses[_c].frames.size()) / total : 0.f;
+}
+
+ozz::sample::Color PoseGallery::ShareColor(float _t) {
+  // Blue, cyan, green, yellow, red; lightened, as the shading darkens it.
+  const ozz::sample::Color kStops[] = {{.2f, .35f, 1.f, 1.f},
+                                       {.1f, .85f, .95f, 1.f},
+                                       {.25f, .9f, .3f, 1.f},
+                                       {1.f, .9f, .15f, 1.f},
+                                       {1.f, .25f, .15f, 1.f}};
+  const int last = static_cast<int>(sizeof(kStops) / sizeof(kStops[0])) - 1;
+  const float x = std::clamp(_t, 0.f, 1.f) * last;
+  const int i = std::min(static_cast<int>(x), last - 1);
+  const float a = x - i;
+  const ozz::sample::Color& c0 = kStops[i];
+  const ozz::sample::Color& c1 = kStops[i + 1];
+  const float kLighten = .2f;
+  auto mix = [&](float _v0, float _v1) {
+    const float v = _v0 + (_v1 - _v0) * a;
+    return v + (1.f - v) * kLighten;
+  };
+  return {mix(c0.r, c1.r), mix(c0.g, c1.g), mix(c0.b, c1.b), 1.f};
+}
+
+ozz::sample::Color PoseGallery::PoseColor(int _c) const {
+  if (!color_by_share || result_.poses.empty()) {
+    return ozz::sample::kWhite;
+  }
+  // Scaled from the least to the most common pose.
+  float low = 1.f, high = 0.f;
+  for (int c = 0; c < static_cast<int>(result_.poses.size()); ++c) {
+    low = std::min(low, Share(c));
+    high = std::max(high, Share(c));
+  }
+  return ShareColor(high > low ? (Share(_c) - low) / (high - low) : 1.f);
 }
 
 PoseGallery::Shown PoseGallery::shown(int _c) const {

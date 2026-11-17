@@ -694,6 +694,7 @@ ozz::unique_ptr<SkinnedAmbientShader> SkinnedAmbientShader::Build() {
       "uniform mat4 u_model;\n"
       "uniform mat4 u_viewproj;\n"
       "uniform mat4 u_joints[64];\n"
+      "uniform vec4 u_color;\n"
       "in vec3 a_position;\n"
       "in vec3 a_normal;\n"
       "in vec4 a_joints0;\n"
@@ -720,7 +721,7 @@ ozz::unique_ptr<SkinnedAmbientShader> SkinnedAmbientShader::Build() {
       "    cross(world_matrix[0].xyz, world_matrix[1].xyz));\n"
       "  float invdet = 1.0 / dot(cross_matrix[2], world_matrix[2].xyz);\n"
       "  v_world_normal = cross_matrix * invdet * a_normal;\n"
-      "  v_vertex_color = vec4(1.);\n"
+      "  v_vertex_color = u_color;\n"
       "}\n"};
   const char* fs[] = {kPlatformSpecificFSHeader, kShaderAmbientFct,
                       kShaderAmbientFS};
@@ -738,6 +739,7 @@ ozz::unique_ptr<SkinnedAmbientShader> SkinnedAmbientShader::Build() {
   success &= shader->BindUniform("u_model");
   success &= shader->BindUniform("u_viewproj");
   success &= shader->BindUniform("u_joints");
+  success &= shader->BindUniform("u_color");
   if (!success) {
     shader.reset();
   }
@@ -746,7 +748,8 @@ ozz::unique_ptr<SkinnedAmbientShader> SkinnedAmbientShader::Build() {
 
 void SkinnedAmbientShader::Bind(const math::Float4x4& _model,
                                 const math::Float4x4& _view_proj,
-                                span<const math::Float4x4> _joints) {
+                                span<const math::Float4x4> _joints,
+                                const float _color[4]) {
   GL(UseProgram(program()));
   const GLsizei stride = 64;
   const struct {
@@ -768,6 +771,7 @@ void SkinnedAmbientShader::Bind(const math::Float4x4& _model,
                 "Float4x4 must be 16 contiguous floats");
   GL(UniformMatrix4fv(uniform(2), static_cast<GLsizei>(_joints.size()), false,
                       reinterpret_cast<const float*>(_joints.data())));
+  GL(Uniform4fv(uniform(3), 1, _color));
 }
 
 ozz::unique_ptr<AmbientShaderInstanced> AmbientShaderInstanced::Build() {

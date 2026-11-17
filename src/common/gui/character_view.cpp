@@ -129,7 +129,8 @@ ozz::math::Box CharacterView::Bounds(
 
 bool CharacterView::Draw(ozz::sample::Renderer* _renderer,
                          ozz::span<const ozz::math::Float4x4> _clip_models,
-                         const ozz::math::Float4x4& _transform) {
+                         const ozz::math::Float4x4& _transform,
+                         const ozz::sample::Color& _color) {
   if (!Pose(_clip_models, &models_)) {
     return true;  // Nothing to draw.
   }
@@ -137,7 +138,7 @@ bool CharacterView::Draw(ozz::sample::Renderer* _renderer,
   bool success = true;
   for (size_t m = 0; m < meshes_.size(); ++m) {
     ComputeSkinningMatrices(meshes_[m], make_span(models_), make_span(skinning_matrices_));
-    success &= DrawMesh(_renderer, m, make_span(skinning_matrices_), _transform);
+    success &= DrawMesh(_renderer, m, make_span(skinning_matrices_), _transform, _color);
   }
   return success;
 }
@@ -156,7 +157,8 @@ bool CharacterView::Bake(ozz::span<const ozz::math::Float4x4> _clip_models, Bake
 }
 
 bool CharacterView::DrawBaked(ozz::sample::Renderer* _renderer, const Baked& _baked,
-                              const ozz::math::Float4x4& _transform) {
+                              const ozz::math::Float4x4& _transform,
+                              const ozz::sample::Color& _color) {
   if (_baked.size() != meshes_.size()) {
     return false;
   }
@@ -166,7 +168,7 @@ bool CharacterView::DrawBaked(ozz::sample::Renderer* _renderer, const Baked& _ba
     // The framework's CPU path takes mutable matrices.
     ozz::vector<ozz::math::Float4x4>& matrices =
         const_cast<ozz::vector<ozz::math::Float4x4>&>(_baked[m]);
-    success &= DrawMesh(_renderer, m, make_span(matrices), _transform);
+    success &= DrawMesh(_renderer, m, make_span(matrices), _transform, _color);
   }
   return success;
 }
@@ -184,14 +186,16 @@ void CharacterView::UpdateGpuMeshes(ozz::sample::Renderer* _renderer) {
 
 bool CharacterView::DrawMesh(ozz::sample::Renderer* _renderer, size_t _mesh,
                              ozz::span<ozz::math::Float4x4> _skinning_matrices,
-                             const ozz::math::Float4x4& _transform) {
+                             const ozz::math::Float4x4& _transform,
+                             const ozz::sample::Color& _color) {
   if (_mesh < gpu_meshes_.size() && gpu_meshes_[_mesh]) {
     return _renderer->DrawGpuMesh(
         *gpu_meshes_[_mesh],
         ozz::span<const ozz::math::Float4x4>(_skinning_matrices.data(),
                                              _skinning_matrices.size()),
-        _transform);
+        _transform, _color);
   }
+  // The CPU path draws untinted.
   return _renderer->DrawSkinnedMesh(meshes_[_mesh], _skinning_matrices, _transform);
 }
 

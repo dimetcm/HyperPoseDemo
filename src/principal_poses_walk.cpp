@@ -66,7 +66,9 @@ OZZ_OPTIONS_DECLARE_BOOL(best_k, "Finds the best cluster count once common poses
                          false, false)
 OZZ_OPTIONS_DECLARE_STRING(walk_tag, "Tag the pose walk goes to (see Go to tag).", "", false)
 OZZ_OPTIONS_DECLARE_BOOL(control, "Starts in character control mode.", false, false)
-OZZ_OPTIONS_DECLARE_STRING(gallery, "Pose gallery mode: still, frames, clips or clips_still.", "still",
+OZZ_OPTIONS_DECLARE_BOOL(color_by_share, "Tints the pose gallery by pose share.", false,
+                         false)
+OZZ_OPTIONS_DECLARE_STRING(gallery,"Pose gallery mode: still, frames, clips or clips_still.", "still",
                            false)
 
 namespace {
@@ -121,6 +123,7 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
                     : gallery_mode == "clips" ? hyperpose::PoseGallery::Mode::kClips
                     : gallery_mode == "clips_still" ? hyperpose::PoseGallery::Mode::kClipsStill
                                               : hyperpose::PoseGallery::Mode::kStill;
+    gallery_.color_by_share = OPTIONS_color_by_share;
     if (OPTIONS_control) {
       SetWalkMode(WalkMode::kControl);
     }
@@ -1070,6 +1073,31 @@ class PrincipalPosesWalkApplication : public ozz::sample::Application {
                          ImGuiSliderFlags_Logarithmic);
       ImGui::SetItemTooltip("How long each picked frame's clip plays before the next pick.");
       ImGui::EndDisabled();
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox("Color by share", &gallery_.color_by_share);
+    if (ImGui::BeginItemTooltip()) {
+      ImGui::TextUnformatted(
+          "Tints each pose by its share of frames (how much time the clips\n"
+          "spend in it), from the least common pose to the most common:");
+      // The scale.
+      const float swatch = ImGui::GetFontSize();
+      for (int i = 0; i <= 8; ++i) {
+        const ozz::sample::Color c = hyperpose::PoseGallery::ShareColor(i / 8.f);
+        ImGui::ColorButton("##scale", ImVec4(c.r, c.g, c.b, 1.f),
+                           ImGuiColorEditFlags_NoTooltip, ImVec2(swatch * 2.f, swatch));
+        ImGui::SameLine(0.f, 0.f);
+      }
+      ImGui::NewLine();
+      if (!gallery_.empty()) {
+        float low = 1.f, high = 0.f;
+        for (int c = 0; c < gallery_.size(); ++c) {
+          low = std::min(low, gallery_.Share(c));
+          high = std::max(high, gallery_.Share(c));
+        }
+        ImGui::Text("%.1f%%  ...  %.1f%%", low * 100.f, high * 100.f);
+      }
+      ImGui::EndTooltip();
     }
     ImGui::SameLine();
     ImGui::Checkbox("Debug text", &debug_text_);

@@ -226,8 +226,9 @@ class SkinnedAmbientShader : public Shader {
 
   // Binds the shader for the array buffer bound, interleaved: position (3
   // floats), normal (3 floats), joint indices (8 bytes), weights (8 floats).
+  // _color (rgba) tints the mesh.
   void Bind(const math::Float4x4& _model, const math::Float4x4& _view_proj,
-            span<const math::Float4x4> _joints);
+            span<const math::Float4x4> _joints, const float _color[4]);
 };
 
 class AmbientShaderInstanced : public Shader {
