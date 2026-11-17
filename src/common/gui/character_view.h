@@ -67,6 +67,18 @@ class CharacterView {
                  const ozz::math::Float4x4& _transform,
                  const ozz::sample::Color& _color = ozz::sample::kWhite);
 
+  // Many characters at once, instanced on the GPU (see
+  // Renderer::DrawGpuMeshInstanced): BeginBatch, AddToBatch or
+  // AddBakedToBatch each (as Draw and DrawBaked), then DrawBatch draws them
+  // all, in a few draw calls a mesh.
+  void BeginBatch();
+  bool AddToBatch(ozz::span<const ozz::math::Float4x4> _clip_models,
+                  const ozz::math::Float4x4& _transform,
+                  const ozz::sample::Color& _color = ozz::sample::kWhite);
+  bool AddBakedToBatch(const Baked& _baked, const ozz::math::Float4x4& _transform,
+                       const ozz::sample::Color& _color = ozz::sample::kWhite);
+  bool DrawBatch(ozz::sample::Renderer* _renderer);
+
   // Character selection combo and status. Returns true on selection change.
   bool DrawGui();
 
@@ -109,6 +121,14 @@ class CharacterView {
   // Scratch: character pose and skinning matrices of the pose being drawn.
   ozz::vector<ozz::math::Float4x4> models_;
   ozz::vector<ozz::math::Float4x4> skinning_matrices_;
+  // Batch: per mesh, the instances' skinning matrices in world space; and
+  // per instance, its color.
+  std::vector<ozz::vector<ozz::math::Float4x4>> batch_matrices_;
+  ozz::vector<ozz::sample::Color> batch_colors_;
+  // Appends mesh _mesh's _skinning_matrices to the batch, placed by
+  // _transform.
+  void AddToBatch(size_t _mesh, ozz::span<const ozz::math::Float4x4> _skinning_matrices,
+                  const ozz::math::Float4x4& _transform);
 
   const ozz::animation::Skeleton* clip_skeleton_ = nullptr;
   std::filesystem::path clip_skeleton_path_;

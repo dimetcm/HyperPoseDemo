@@ -250,6 +250,12 @@ bool PoseGallery::Draw(ozz::sample::Renderer* _renderer,
                        CharacterView* _character, bool _draw_mesh,
                        bool _draw_skeleton) {
   bool success = true;
+  // The characters are batched, drawn at once (instanced) at the end.
+  _character->BeginBatch();
+  std::vector<ozz::sample::Color> colors(size());
+  for (int c = 0; c < size(); ++c) {
+    colors[c] = PoseColor(c);
+  }
   if (mode == Mode::kClips || mode == Mode::kClipsStill) {
     // Every stay overlaid; still, skinned once.
     const bool still = mode == Mode::kClipsStill;
@@ -260,17 +266,18 @@ bool PoseGallery::Draw(ozz::sample::Renderer* _renderer,
       const math::Float4x4 transform = Transform(c);
       for (const Stay& stay : stays_[c]) {
         if (show_character) {
-          success &= still ? _character->DrawBaked(_renderer, stay.baked, transform,
-                                                   PoseColor(c))
-                           : _character->Draw(_renderer, make_span(stay.models), transform,
-                                              PoseColor(c));
+          if (still) {
+            _character->AddBakedToBatch(stay.baked, transform, colors[c]);
+          } else {
+            _character->AddToBatch(make_span(stay.models), transform, colors[c]);
+          }
         }
         if (_draw_skeleton || !show_character) {
           success &= _renderer->DrawPosture(*skeleton_, make_span(stay.models), transform);
         }
       }
     }
-    return success;
+    return success & _character->DrawBatch(_renderer);
   }
   const bool show_character =
       _draw_mesh && (animated() ? _character->posed() : Baked(*_character));
@@ -279,16 +286,16 @@ bool PoseGallery::Draw(ozz::sample::Renderer* _renderer,
     const Shown pose = shown(c);
     if (show_character) {
       if (animated()) {
-        success &= _character->Draw(_renderer, pose.models, transform, PoseColor(c));
+        _character->AddToBatch(pose.models, transform, colors[c]);
       } else {
-        success &= _character->DrawBaked(_renderer, baked_[c], transform, PoseColor(c));
+        _character->AddBakedToBatch(baked_[c], transform, colors[c]);
       }
     }
     if (_draw_skeleton || !show_character) {
       success &= _renderer->DrawPosture(*skeleton_, pose.models, transform);
     }
   }
-  return success;
+  return success & _character->DrawBatch(_renderer);
 }
 
 float PoseGallery::Share(int _c) const {

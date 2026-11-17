@@ -231,6 +231,25 @@ class SkinnedAmbientShader : public Shader {
             span<const math::Float4x4> _joints, const float _color[4]);
 };
 
+// Instanced GPU skinning (HyperPoseDemo addition): the mesh layout of
+// SkinnedAmbientShader, drawn once per instance, the instances read from an
+// RGBA32F texture bound to unit 0, kTextureWidth texels a row: per instance,
+// its skinning matrices in world space (4 texels each, the columns), then its
+// color (1 texel).
+class SkinnedInstancedShader : public Shader {
+ public:
+  enum { kTextureWidth = 1024 };
+
+  SkinnedInstancedShader() {}
+  virtual ~SkinnedInstancedShader() {}
+
+  static ozz::unique_ptr<SkinnedInstancedShader> Build();
+
+  // Binds the shader for the array buffer bound, _joints matrices an
+  // instance.
+  void Bind(const math::Float4x4& _view_proj, int _joints);
+};
+
 class AmbientShaderInstanced : public Shader {
  public:
   AmbientShaderInstanced() {}

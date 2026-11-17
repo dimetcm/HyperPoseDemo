@@ -173,6 +173,78 @@ bool CharacterView::DrawBaked(ozz::sample::Renderer* _renderer, const Baked& _ba
   return success;
 }
 
+void CharacterView::BeginBatch() {
+  batch_matrices_.resize(meshes_.size());
+  for (auto& matrices : batch_matrices_) {
+    matrices.clear();
+  }
+  batch_colors_.clear();
+}
+
+void CharacterView::AddToBatch(size_t _mesh,
+                               ozz::span<const ozz::math::Float4x4> _skinning_matrices,
+                               const ozz::math::Float4x4& _transform) {
+  const size_t joints = meshes_[_mesh].joint_remaps.size();
+  ozz::vector<ozz::math::Float4x4>& out = batch_matrices_[_mesh];
+  for (size_t j = 0; j < joints && j < _skinning_matrices.size(); ++j) {
+    out.push_back(_transform * _skinning_matrices[j]);
+  }
+}
+
+bool CharacterView::AddToBatch(ozz::span<const ozz::math::Float4x4> _clip_models,
+                               const ozz::math::Float4x4& _transform,
+                               const ozz::sample::Color& _color) {
+  if (batch_matrices_.size() != meshes_.size() || !Pose(_clip_models, &models_)) {
+    return false;
+  }
+  for (size_t m = 0; m < meshes_.size(); ++m) {
+    ComputeSkinningMatrices(meshes_[m], make_span(models_), make_span(skinning_matrices_));
+    AddToBatch(m, make_span(skinning_matrices_), _transform);
+  }
+  batch_colors_.push_back(_color);
+  return true;
+}
+
+bool CharacterView::AddBakedToBatch(const Baked& _baked, const ozz::math::Float4x4& _transform,
+                                    const ozz::sample::Color& _color) {
+  if (batch_matrices_.size() != meshes_.size() || _baked.size() != meshes_.size()) {
+    return false;
+  }
+  for (size_t m = 0; m < meshes_.size(); ++m) {
+    AddToBatch(m, make_span(_baked[m]), _transform);
+  }
+  batch_colors_.push_back(_color);
+  return true;
+}
+
+bool CharacterView::DrawBatch(ozz::sample::Renderer* _renderer) {
+  if (batch_colors_.empty() || batch_matrices_.size() != meshes_.size()) {
+    return true;
+  }
+  UpdateGpuMeshes(_renderer);
+  bool success = true;
+  const ozz::math::Float4x4 identity = ozz::math::Float4x4::identity();
+  for (size_t m = 0; m < meshes_.size(); ++m) {
+    ozz::vector<ozz::math::Float4x4>& matrices = batch_matrices_[m];
+    const size_t joints = meshes_[m].joint_remaps.size();
+    if (joints == 0 || matrices.size() != joints * batch_colors_.size()) {
+      continue;
+    }
+    if (m < gpu_meshes_.size() && gpu_meshes_[m] &&
+        _renderer->DrawGpuMeshInstanced(*gpu_meshes_[m], make_span(matrices),
+                                        make_span(batch_colors_))) {
+      continue;
+    }
+    // Not instanced: one at a time (in world space already).
+    for (size_t i = 0; i < batch_colors_.size(); ++i) {
+      ozz::span<ozz::math::Float4x4> instance(matrices.data() + i * joints, joints);
+      success &= DrawMesh(_renderer, m, instance, identity, batch_colors_[i]);
+    }
+  }
+  BeginBatch();  // Empty for the next one.
+  return success;
+}
+
 void CharacterView::UpdateGpuMeshes(ozz::sample::Renderer* _renderer) {
   if (gpu_generation_ == generation_ && gpu_meshes_.size() == meshes_.size()) {
     return;

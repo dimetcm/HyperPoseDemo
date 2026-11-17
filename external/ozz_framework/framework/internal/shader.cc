@@ -746,11 +746,10 @@ ozz::unique_ptr<SkinnedAmbientShader> SkinnedAmbientShader::Build() {
   return shader;
 }
 
-void SkinnedAmbientShader::Bind(const math::Float4x4& _model,
-                                const math::Float4x4& _view_proj,
-                                span<const math::Float4x4> _joints,
-                                const float _color[4]) {
-  GL(UseProgram(program()));
+namespace {
+// Skinned mesh vertex attributes (see SkinnedAmbientShader::Bind), found in
+// that order (attribs 0 to 5) by both skinning shaders.
+void BindSkinnedAttribs(const Shader& _shader) {
   const GLsizei stride = 64;
   const struct {
     int attrib;
@@ -761,10 +760,19 @@ void SkinnedAmbientShader::Bind(const math::Float4x4& _model,
                  {2, 4, GL_UNSIGNED_BYTE, 24}, {3, 4, GL_UNSIGNED_BYTE, 28},
                  {4, 4, GL_FLOAT, 32},         {5, 4, GL_FLOAT, 48}};
   for (const auto& a : attribs) {
-    GL(EnableVertexAttribArray(attrib(a.attrib)));
-    GL(VertexAttribPointer(attrib(a.attrib), a.size, a.type, GL_FALSE, stride,
-                           GL_PTR_OFFSET(a.offset)));
+    GL(EnableVertexAttribArray(_shader.attrib(a.attrib)));
+    GL(VertexAttribPointer(_shader.attrib(a.attrib), a.size, a.type, GL_FALSE,
+                           stride, GL_PTR_OFFSET(a.offset)));
   }
+}
+}  // namespace
+
+void SkinnedAmbientShader::Bind(const math::Float4x4& _model,
+                                const math::Float4x4& _view_proj,
+                                span<const math::Float4x4> _joints,
+                                const float _color[4]) {
+  GL(UseProgram(program()));
+  BindSkinnedAttribs(*this);
   glUniformMat4(_model, uniform(0));
   glUniformMat4(_view_proj, uniform(1));
   static_assert(sizeof(math::Float4x4) == 16 * sizeof(float),
@@ -772,6 +780,82 @@ void SkinnedAmbientShader::Bind(const math::Float4x4& _model,
   GL(UniformMatrix4fv(uniform(2), static_cast<GLsizei>(_joints.size()), false,
                       reinterpret_cast<const float*>(_joints.data())));
   GL(Uniform4fv(uniform(3), 1, _color));
+}
+
+ozz::unique_ptr<SkinnedInstancedShader> SkinnedInstancedShader::Build() {
+  const char* vs[] = {
+      kPlatformSpecificVSHeader,
+      "uniform mat4 u_viewproj;\n"
+      "uniform sampler2D u_instances;\n"
+      "uniform int u_joints;\n"
+      "in vec3 a_position;\n"
+      "in vec3 a_normal;\n"
+      "in vec4 a_joints0;\n"
+      "in vec4 a_joints1;\n"
+      "in vec4 a_weights0;\n"
+      "in vec4 a_weights1;\n"
+      "out vec3 v_world_normal;\n"
+      "out vec4 v_vertex_color;\n"
+      "vec4 Texel(int _i) {\n"
+      "  return texelFetch(u_instances, ivec2(_i % 1024, _i / 1024), 0);\n"
+      "}\n"
+      "void Add(inout mat4 _m, int _base, float _joint, float _weight) {\n"
+      "  if (_weight > 0.) {\n"
+      "    int i = _base + int(_joint) * 4;\n"
+      "    _m += mat4(Texel(i), Texel(i + 1), Texel(i + 2), Texel(i + 3)) *\n"
+      "          _weight;\n"
+      "  }\n"
+      "}\n"
+      "void main() {\n"
+      "  int base = gl_InstanceID * (u_joints * 4 + 1);\n"
+      "  mat4 world_matrix = mat4(0.);\n"
+      "  Add(world_matrix, base, a_joints0.x, a_weights0.x);\n"
+      "  Add(world_matrix, base, a_joints0.y, a_weights0.y);\n"
+      "  Add(world_matrix, base, a_joints0.z, a_weights0.z);\n"
+      "  Add(world_matrix, base, a_joints0.w, a_weights0.w);\n"
+      "  Add(world_matrix, base, a_joints1.x, a_weights1.x);\n"
+      "  Add(world_matrix, base, a_joints1.y, a_weights1.y);\n"
+      "  Add(world_matrix, base, a_joints1.z, a_weights1.z);\n"
+      "  Add(world_matrix, base, a_joints1.w, a_weights1.w);\n"
+      "  gl_Position = u_viewproj * world_matrix * vec4(a_position, 1.);\n"
+      "  mat3 cross_matrix = mat3(\n"
+      "    cross(world_matrix[1].xyz, world_matrix[2].xyz),\n"
+      "    cross(world_matrix[2].xyz, world_matrix[0].xyz),\n"
+      "    cross(world_matrix[0].xyz, world_matrix[1].xyz));\n"
+      "  float invdet = 1.0 / dot(cross_matrix[2], world_matrix[2].xyz);\n"
+      "  v_world_normal = cross_matrix * invdet * a_normal;\n"
+      "  v_vertex_color = vec4(Texel(base + u_joints * 4).rgb, 1.);\n"
+      "}\n"};
+  static_assert(kTextureWidth == 1024, "Texel() assumes 1024 texels a row");
+  const char* fs[] = {kPlatformSpecificFSHeader, kShaderAmbientFct,
+                      kShaderAmbientFS};
+
+  ozz::unique_ptr<SkinnedInstancedShader> shader =
+      make_unique<SkinnedInstancedShader>();
+  bool success =
+      shader->BuildFromSource(OZZ_ARRAY_SIZE(vs), vs, OZZ_ARRAY_SIZE(fs), fs);
+  success &= shader->FindAttrib("a_position");
+  success &= shader->FindAttrib("a_normal");
+  success &= shader->FindAttrib("a_joints0");
+  success &= shader->FindAttrib("a_joints1");
+  success &= shader->FindAttrib("a_weights0");
+  success &= shader->FindAttrib("a_weights1");
+  success &= shader->BindUniform("u_viewproj");
+  success &= shader->BindUniform("u_instances");
+  success &= shader->BindUniform("u_joints");
+  if (!success) {
+    shader.reset();
+  }
+  return shader;
+}
+
+void SkinnedInstancedShader::Bind(const math::Float4x4& _view_proj,
+                                  int _joints) {
+  GL(UseProgram(program()));
+  BindSkinnedAttribs(*this);
+  glUniformMat4(_view_proj, uniform(0));
+  GL(Uniform1i(uniform(1), 0));  // Texture unit 0.
+  GL(Uniform1i(uniform(2), _joints));
 }
 
 ozz::unique_ptr<AmbientShaderInstanced> AmbientShaderInstanced::Build() {

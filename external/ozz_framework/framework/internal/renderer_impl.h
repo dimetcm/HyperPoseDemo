@@ -104,6 +104,7 @@ class PointsShader;
 class SkeletonShader;
 class AmbientShader;
 class SkinnedAmbientShader;
+class SkinnedInstancedShader;
 class AmbientTexturedShader;
 class AmbientShaderInstanced;
 class GlImmediateRenderer;
@@ -166,6 +167,9 @@ class RendererImpl : public Renderer {
                            span<const math::Float4x4> _skinning_matrices,
                            const ozz::math::Float4x4& _transform,
                            const Color& _color = kWhite);
+  virtual bool DrawGpuMeshInstanced(const GpuMesh& _mesh,
+                                    span<const math::Float4x4> _skinning_matrices,
+                                    span<const Color> _colors);
 
   // A GpuMesh's GPU data. Deleted with the mesh, or with the renderer if it
   // goes first (the GL context is gone after it).
@@ -290,6 +294,16 @@ class RendererImpl : public Renderer {
   // GPU skinning shader, and the live GPU meshes.
   ozz::unique_ptr<SkinnedAmbientShader> skinned_ambient_shader;
   ozz::vector<GpuMeshImpl*> gpu_meshes_;
+  // Instanced GPU skinning: its shader (nullptr: not supported), the textures
+  // the instances are uploaded to, used in turn so that an upload doesn't
+  // wait for the GPU to be done with a texture, and the GL maximum texture
+  // size.
+  ozz::unique_ptr<SkinnedInstancedShader> skinned_instanced_shader;
+  enum { kInstanceTextures = 16 };
+  GLuint instance_textures_[kInstanceTextures] = {};
+  GLsizei instance_texture_rows_[kInstanceTextures] = {};  // Allocated.
+  int next_instance_texture_ = 0;
+  GLint max_texture_size_ = 0;
 
   // Ambient rendering shader.
   ozz::unique_ptr<AmbientShader> ambient_shader;

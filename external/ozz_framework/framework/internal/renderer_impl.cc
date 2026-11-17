@@ -99,6 +99,12 @@ RendererImpl::~RendererImpl() {
     GL(DeleteTextures(1, &checkered_texture_));
     checkered_texture_ = 0;
   }
+  for (GLuint& texture : instance_textures_) {
+    if (texture) {
+      GL(DeleteTextures(1, &texture));
+      texture = 0;
+    }
+  }
 }
 
 bool RendererImpl::Initialize() {
@@ -131,6 +137,11 @@ bool RendererImpl::Initialize() {
 
   // GPU skinning shader (optional: meshes are skinned on the CPU without).
   skinned_ambient_shader = SkinnedAmbientShader::Build();
+  // Instanced (optional too: DrawGpuMeshInstanced fails without).
+  if (GL_ARB_instanced_arrays_supported) {
+    skinned_instanced_shader = SkinnedInstancedShader::Build();
+    GL(GetIntegerv(GL_MAX_TEXTURE_SIZE, &max_texture_size_));
+  }
 
   // Instantiate ambient rendering shader.
   ambient_shader = AmbientShader::Build();
@@ -1558,6 +1569,80 @@ bool RendererImpl::DrawGpuMesh(const GpuMesh& _mesh,
   GL(BindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
   GL(BindBuffer(GL_ARRAY_BUFFER, 0));
   skinned_ambient_shader->Unbind();
+  return true;
+}
+
+bool RendererImpl::DrawGpuMeshInstanced(
+    const GpuMesh& _mesh, span<const math::Float4x4> _skinning_matrices,
+    span<const Color> _colors) {
+  const GpuMeshImpl& mesh = static_cast<const GpuMeshImpl&>(_mesh);
+  const size_t instances = _colors.size();
+  const int joints = mesh.num_joints;
+  if (!mesh.vbo || !skinned_instanced_shader || joints <= 0 ||
+      _skinning_matrices.size() < instances * joints) {
+    return false;
+  }
+  if (instances == 0) {
+    return true;
+  }
+  // Per instance: its matrices (4 texels each), then its color (1 texel), in
+  // rows of kTextureWidth texels; as many instances a draw as the texture
+  // can hold.
+  const int width = SkinnedInstancedShader::kTextureWidth;
+  const size_t texels_per_instance = static_cast<size_t>(joints) * 4 + 1;
+  const size_t max_rows = static_cast<size_t>(std::max<GLint>(max_texture_size_, 1));
+  const size_t per_draw = std::max<size_t>(1, width * max_rows / texels_per_instance);
+  if (texels_per_instance > width * max_rows) {
+    return false;
+  }
+  GL(BindBuffer(GL_ARRAY_BUFFER, mesh.vbo));
+  skinned_instanced_shader->Bind(camera()->view_proj(), joints);
+  GL(BindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.ibo));
+  for (size_t first = 0; first < instances; first += per_draw) {
+    const size_t count = std::min(per_draw, instances - first);
+    const size_t texels = count * texels_per_instance;
+    const size_t rows = (texels + width - 1) / width;
+    float* data = static_cast<float*>(
+        scratch_buffer_.Resize(rows * width * 4 * sizeof(float)));
+    float* out = data;
+    for (size_t i = first; i < first + count; ++i) {
+      std::memcpy(out, &_skinning_matrices[i * joints],
+                  joints * sizeof(math::Float4x4));
+      out += joints * 16;
+      const Color& color = _colors[i];
+      *out++ = color.r;
+      *out++ = color.g;
+      *out++ = color.b;
+      *out++ = 1.f;
+    }
+    // The next texture in turn, its storage allocated once (grown when
+    // needed), so uploads don't reallocate it.
+    const int slot = next_instance_texture_;
+    next_instance_texture_ = (next_instance_texture_ + 1) % kInstanceTextures;
+    GLuint& texture = instance_textures_[slot];
+    if (!texture) {
+      GL(GenTextures(1, &texture));
+      GL(BindTexture(GL_TEXTURE_2D, texture));
+      GL(TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST));
+      GL(TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST));
+    }
+    GL(BindTexture(GL_TEXTURE_2D, texture));
+    if (instance_texture_rows_[slot] < static_cast<GLsizei>(rows)) {
+      const GLsizei allocated = std::min<GLsizei>(
+          std::max<GLsizei>(64, static_cast<GLsizei>(rows) * 2), static_cast<GLsizei>(max_rows));
+      GL(TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, allocated, 0, GL_RGBA, GL_FLOAT,
+                    nullptr));
+      instance_texture_rows_[slot] = allocated;
+    }
+    GL(TexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, static_cast<GLsizei>(rows), GL_RGBA,
+                     GL_FLOAT, data));
+    GL(DrawElementsInstanced_(GL_TRIANGLES, mesh.index_count, GL_UNSIGNED_SHORT, 0,
+                              static_cast<GLsizei>(count)));
+  }
+  GL(BindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
+  GL(BindBuffer(GL_ARRAY_BUFFER, 0));
+  skinned_instanced_shader->Unbind();
+  GL(BindTexture(GL_TEXTURE_2D, 0));
   return true;
 }
 

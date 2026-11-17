@@ -195,6 +195,16 @@ class Renderer {
                            const ozz::math::Float4x4& _transform,
                            const Color& _color = kWhite) = 0;
 
+  // Instanced GPU skinning (HyperPoseDemo addition): draws _mesh (from
+  // CreateGpuMesh) once per instance, in a few draw calls whatever their
+  // number. Instance i is skinned by _skinning_matrices[i * n, (i + 1) * n),
+  // n being the mesh's joint count, in world space (its transform applied),
+  // and tinted by _colors[i] (opaque). False when not supported: then draw
+  // each with DrawGpuMesh.
+  virtual bool DrawGpuMeshInstanced(const GpuMesh& _mesh,
+                                    span<const math::Float4x4> _skinning_matrices,
+                                    span<const Color> _colors) = 0;
+
   // Renders a mesh at a specified location.
   virtual bool DrawMesh(const Mesh& _mesh,
                         const ozz::math::Float4x4& _transform,
