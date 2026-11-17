@@ -1,3 +1,5 @@
+https://github.com/user-attachments/assets/c8349d5c-dfb3-4628-9b29-a62edf4a7b57
+
 # HyperPoseDemo
 
 Experiments in pose matching and motion blending, built on
