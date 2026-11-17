@@ -426,7 +426,8 @@ bool Application::Display() {
 
   // Renders grid and axes at the end as they are transparent.
   if (show_grid_) {
-    renderer_->DrawGrid(20, 1.f);
+    // [HyperPoseDemo change] 40 m wide (was 20), for the gallery and walks.
+    renderer_->DrawGrid(40, 1.f);
   }
   if (show_axes_) {
     renderer_->DrawAxes(ozz::math::Float4x4::identity());
